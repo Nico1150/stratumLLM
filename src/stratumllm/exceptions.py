@@ -15,3 +15,11 @@ class HardwareDiscoveryError(StratumLLMError):
 
 class ConfigurationError(StratumLLMError):
     """Raised when user-supplied configuration is inconsistent."""
+
+
+class ModelResolutionError(StratumLLMError):
+    """Raised when a model artifact cannot be resolved to planning metadata."""
+
+
+class InferenceError(StratumLLMError):
+    """Raised when a local runtime (Ollama, llama.cpp) fails to run inference."""

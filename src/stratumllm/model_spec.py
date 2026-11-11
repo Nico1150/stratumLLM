@@ -19,6 +19,11 @@ class QuantizationKind(str, Enum):
 
 
 # Approximate bytes per parameter by quantization (including modest metadata overhead).
+def bytes_per_parameter(quantization: QuantizationKind) -> float:
+    """Planning estimate of bytes per parameter for a quantization preset."""
+    return _BYTES_PER_PARAM[quantization]
+
+
 _BYTES_PER_PARAM: dict[QuantizationKind, float] = {
     QuantizationKind.Q4_K_M: 0.56,
     QuantizationKind.Q4_0: 0.52,
