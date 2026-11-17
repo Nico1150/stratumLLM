@@ -30,8 +30,11 @@ def test_ollama_generate_parses_response() -> None:
     mock_resp.__exit__ = MagicMock(return_value=False)
 
     with patch("urllib.request.urlopen", return_value=mock_resp) as urlopen:
-        result = ollama_generate("demo", "hi", _full_gpu_strategy())
+        result = ollama_generate("demo", "hi", _full_gpu_strategy(), num_ctx=8192)
 
     assert result.text == "hello"
     assert result.runtime == "ollama"
     assert urlopen.called
+    request = urlopen.call_args[0][0]
+    body = json.loads(request.data.decode())
+    assert body["options"]["num_ctx"] == 8192

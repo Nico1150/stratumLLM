@@ -7,6 +7,8 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
+from stratumllm.kv_cache import KvCacheStorage
+
 
 class QuantizationKind(str, Enum):
     """Supported weight precisions for size estimation."""
@@ -71,13 +73,17 @@ class ModelSpec(BaseModel):
         int | None,
         Field(default=None, gt=0, description="Attention head dimension; default 128."),
     ] = None
+    kv_cache_storage: KvCacheStorage = Field(
+        default=KvCacheStorage.F16,
+        description="In-memory K/V dtype; must match the inference runtime.",
+    )
 
     def resolved_num_layers(self) -> int:
         """Layer count used for stratified offload (explicit or family heuristic)."""
         if self.num_layers is not None:
             return self.num_layers
         params = self.parameter_count_b
-        if params <= 4 or params <= 9:
+        if params <= 9:
             return 32
         if params <= 15:
             return 40
@@ -102,13 +108,16 @@ class ModelSpec(BaseModel):
         layers = self.resolved_num_layers()
         return self.estimated_weight_gib() / layers
 
-    def estimated_kv_cache_gib(self, *, kv_element_bytes: float = 2.0) -> float:
+    def estimated_kv_cache_gib(self, *, kv_element_bytes: float | None = None) -> float:
         """
-        Estimate KV cache for ``context_length`` tokens (batch size 1, fp16 by default).
+        Estimate KV cache for ``context_length`` tokens (batch size 1).
 
-        Uses ``hidden_size`` / GQA fields when set; otherwise family heuristics from
-        ``parameter_count_b``.
+        Element size comes from ``kv_cache_storage`` (same knob as the runner). Prefer
+        ``hidden_size``, ``num_kv_heads``, and ``head_dim`` from GGUF when present.
         """
+        element_bytes = (
+            kv_element_bytes if kv_element_bytes is not None else self.kv_cache_storage.element_bytes()
+        )
         layers = self.resolved_num_layers()
         hidden = self.hidden_size if self.hidden_size is not None else _heuristic_hidden_size(
             self.parameter_count_b
@@ -117,10 +126,14 @@ class ModelSpec(BaseModel):
         num_heads = max(1, hidden // head_dim)
         if self.num_kv_heads is not None:
             n_kv = self.num_kv_heads
+        elif self.hidden_size is not None:
+            # Partial GGUF geometry without GQA key → MHA (all query heads).
+            n_kv = num_heads
         else:
-            n_kv = _heuristic_num_kv_heads(self.parameter_count_b, num_heads)
+            # No artifact geometry: assume common GQA width (may underestimate very old MHA).
+            n_kv = min(8, num_heads)
         n_kv = min(n_kv, num_heads)
-        bytes_total = 2 * layers * n_kv * head_dim * self.context_length * kv_element_bytes
+        bytes_total = 2 * layers * n_kv * head_dim * self.context_length * element_bytes
         return bytes_total / (1024**3)
 
 
@@ -136,7 +149,3 @@ def _heuristic_hidden_size(parameter_count_b: float) -> int:
     return 12288
 
 
-def _heuristic_num_kv_heads(parameter_count_b: float, num_heads: int) -> int:
-    if parameter_count_b <= 35:
-        return min(8, num_heads)
-    return min(8, num_heads)

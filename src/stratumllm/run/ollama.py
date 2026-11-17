@@ -48,17 +48,20 @@ def ollama_generate(
     base_url: str | None = None,
     options: dict[str, Any] | None = None,
     stream: bool = False,
+    num_ctx: int | None = None,
 ) -> InferenceResult:
     """
     Run ``/api/generate`` with strategy-driven ``num_gpu`` (and related) options.
 
-    Does not mutate the Ollama daemon environment; placement is request-scoped via ``options``.
+    ``num_ctx`` should match the context length used during deployment planning.
     """
     if stream:
         raise InferenceError("Streaming is not implemented; use stream=False.")
 
     base = (base_url or ollama_base_url()).rstrip("/")
     merged_options = {**strategy_to_ollama_options(strategy), **(options or {})}
+    if num_ctx is not None:
+        merged_options["num_ctx"] = num_ctx
     payload = {
         "model": model_ref,
         "prompt": prompt,

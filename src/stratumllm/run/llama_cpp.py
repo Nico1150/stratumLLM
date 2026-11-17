@@ -28,6 +28,7 @@ def llama_cpp_generate(
     *,
     llama_cli: str = "llama-cli",
     max_tokens: int = 256,
+    num_ctx: int | None = None,
     extra_args: list[str] | None = None,
 ) -> InferenceResult:
     """
@@ -54,6 +55,8 @@ def llama_cpp_generate(
         *strategy_to_llama_cpp_cli_args(strategy),
         *(extra_args or []),
     ]
+    if num_ctx is not None:
+        cmd.extend(["-c", str(num_ctx)])
     try:
         result = subprocess.run(
             cmd,

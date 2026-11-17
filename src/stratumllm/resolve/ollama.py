@@ -15,6 +15,10 @@ OLLAMA_MODEL_LAYER = "application/vnd.ollama.image.model"
 _PARAM_TOLERANCE = 0.12
 
 _SHOW_PARAMETERS = re.compile(r"^\s*parameters\s+(\d+(?:\.\d+)?)\s*([bB])\s*$", re.MULTILINE)
+_SHOW_CONTEXT_LENGTH = re.compile(
+    r"^\s*context\s+length\s+(\d+)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 _SHOW_QUANT = re.compile(r"^\s*quantization\s+(\S+)\s*$", re.MULTILINE)
 _SHOW_ARCH = re.compile(r"^\s*architecture\s+(\S+)\s*$", re.MULTILINE)
 
@@ -182,6 +186,15 @@ def parse_show_parameters_b(show_text: str) -> float | None:
         return None
     value = float(match.group(1))
     return value
+
+
+def parse_show_context_length(show_text: str) -> int | None:
+    """Parse ``context length`` line from ``ollama show`` output."""
+    match = _SHOW_CONTEXT_LENGTH.search(show_text)
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if value > 0 else None
 
 
 def verify_parameter_count(

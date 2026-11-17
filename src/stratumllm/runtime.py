@@ -8,6 +8,7 @@ from typing import Literal
 from stratumllm.discovery import discover_hardware_profile
 from stratumllm.evaluator import DeploymentStrategyEvaluator, EvaluatorConfig
 from stratumllm.hardware import HardwareProfile
+from stratumllm.kv_cache import kv_storage_for_runtime
 from stratumllm.model_spec import ModelSpec
 from stratumllm.resolve import ResolvedModel, resolve_gguf, resolve_model
 from stratumllm.run import InferenceResult
@@ -16,6 +17,16 @@ from stratumllm.run.ollama import ensure_ollama_available, ollama_generate
 from stratumllm.strategies import DeploymentStrategy
 
 RuntimeKind = Literal["ollama", "llama.cpp", "auto"]
+
+
+def infer_runtime_kind(model_ref: str, runtime: RuntimeKind = "auto") -> RuntimeKind:
+    """Resolve ``auto``: ``.gguf`` paths → llama.cpp, else Ollama."""
+    if runtime != "auto":
+        return runtime
+    path = Path(model_ref).expanduser()
+    if path.suffix.lower() == ".gguf" and path.is_file():
+        return "llama.cpp"
+    return "ollama"
 
 
 def plan_deployment(
@@ -45,10 +56,11 @@ def plan_deployment_from_model(
     hardware: HardwareProfile | None = None,
     *,
     evaluator_config: EvaluatorConfig | None = None,
-    context_length: int = 4096,
+    context_length: int | None = None,
     expect_parameter_count_b: float | None = None,
     strict: bool = False,
     pull_if_missing: bool = False,
+    runtime: RuntimeKind = "auto",
 ) -> tuple[ResolvedModel, DeploymentStrategy]:
     """Resolve Ollama name or GGUF path, then plan deployment."""
     resolved = resolve_model(
@@ -57,7 +69,11 @@ def plan_deployment_from_model(
         strict=strict,
         pull_if_missing=pull_if_missing,
     )
-    model = resolved.to_model_spec(context_length=context_length)
+    kind = infer_runtime_kind(model_ref, runtime)
+    model = resolved.to_model_spec(
+        context_length=context_length,
+        kv_cache_storage=kv_storage_for_runtime(kind),
+    )
     return resolved, plan_deployment(model, hardware, evaluator_config=evaluator_config)
 
 
@@ -66,7 +82,8 @@ def plan_deployment_from_gguf(
     hardware: HardwareProfile | None = None,
     *,
     evaluator_config: EvaluatorConfig | None = None,
-    context_length: int = 4096,
+    context_length: int | None = None,
+    runtime: RuntimeKind = "llama.cpp",
 ) -> tuple[ResolvedModel, DeploymentStrategy]:
     """
     Resolve a local GGUF artifact, then plan deployment.
@@ -75,7 +92,10 @@ def plan_deployment_from_gguf(
         Tuple of resolved footprint (audit trail) and strategy.
     """
     resolved = resolve_gguf(gguf_path)
-    model = resolved.to_model_spec(context_length=context_length)
+    model = resolved.to_model_spec(
+        context_length=context_length,
+        kv_cache_storage=kv_storage_for_runtime(runtime),
+    )
     return resolved, plan_deployment(model, hardware, evaluator_config=evaluator_config)
 
 
@@ -89,6 +109,7 @@ def run_inference(
     pull_if_missing: bool = True,
     expect_parameter_count_b: float | None = None,
     strict: bool = False,
+    context_length: int | None = None,
     max_tokens: int = 256,
     ollama_base_url: str | None = None,
 ) -> tuple[ResolvedModel, DeploymentStrategy, InferenceResult]:
@@ -100,21 +121,33 @@ def run_inference(
     For Ollama names, downloads the model with ``ollama pull`` when missing *before*
     resolve/plan, so blob-based planning can run.
     """
-    path = Path(model_ref).expanduser()
-    use_llama = runtime == "llama.cpp" or (runtime == "auto" and path.suffix.lower() == ".gguf")
-    use_ollama = not use_llama
+    kind = infer_runtime_kind(model_ref, runtime)
+    use_ollama = kind == "ollama"
 
     resolved, strategy = plan_deployment_from_model(
         model_ref,
         hardware,
         evaluator_config=evaluator_config,
+        context_length=context_length,
         expect_parameter_count_b=expect_parameter_count_b,
         strict=strict,
         pull_if_missing=pull_if_missing and use_ollama,
+        runtime=kind,
+    )
+    num_ctx = (
+        context_length
+        if context_length is not None
+        else (resolved.context_length or 4096)
     )
 
-    if use_llama:
-        result = llama_cpp_generate(resolved, prompt, strategy, max_tokens=max_tokens)
+    if not use_ollama:
+        result = llama_cpp_generate(
+            resolved,
+            prompt,
+            strategy,
+            max_tokens=max_tokens,
+            num_ctx=num_ctx,
+        )
         return resolved, strategy, result
 
     ensure_ollama_available(ollama_base_url)
@@ -123,5 +156,6 @@ def run_inference(
         prompt,
         strategy,
         base_url=ollama_base_url,
+        num_ctx=num_ctx,
     )
     return resolved, strategy, result

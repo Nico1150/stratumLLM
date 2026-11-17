@@ -10,7 +10,9 @@ from typing import Annotated, Any
 from pydantic import BaseModel, Field
 
 from stratumllm.exceptions import ModelResolutionError
+from stratumllm.kv_cache import KvCacheStorage
 from stratumllm.model_spec import ModelSpec, QuantizationKind
+from stratumllm.resolve.attention import attention_footprint_from_gguf, context_length_from_gguf
 from stratumllm.resolve.gguf import read_gguf_metadata
 
 # llama.cpp ``general.file_type`` (llama_ftype) → planning quantization.
@@ -69,20 +71,40 @@ class ResolvedModel(BaseModel):
     num_layers: Annotated[int | None, Field(default=None, gt=0)] = None
     parameter_count_b: Annotated[float | None, Field(default=None, gt=0)] = None
     architecture: str | None = None
+    hidden_size: Annotated[int | None, Field(default=None, gt=0)] = None
+    num_kv_heads: Annotated[int | None, Field(default=None, gt=0)] = None
+    head_dim: Annotated[int | None, Field(default=None, gt=0)] = None
+    context_length: Annotated[int | None, Field(default=None, ge=256)] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    def to_model_spec(self, *, context_length: int = 4096) -> ModelSpec:
-        """Convert to ``ModelSpec`` for ``DeploymentStrategyEvaluator``."""
+    def to_model_spec(
+        self,
+        *,
+        context_length: int | None = None,
+        kv_cache_storage: KvCacheStorage | None = None,
+    ) -> ModelSpec:
+        """
+        Convert to ``ModelSpec`` for ``DeploymentStrategyEvaluator``.
+
+        ``context_length`` on this call wins; else ``ResolvedModel.context_length``
+        (GGUF / Ollama show); else 4096.
+        """
         params = self.parameter_count_b if self.parameter_count_b is not None else 1.0
         quant = self.quantization or QuantizationKind.Q4_K_M
+        ctx = context_length if context_length is not None else (self.context_length or 4096)
+        storage = kv_cache_storage if kv_cache_storage is not None else KvCacheStorage.F16
         return ModelSpec(
             name=self.name,
             parameter_count_b=params,
             quantization=quant,
             weight_size_gib=self.weight_size_gib,
             num_layers=self.num_layers,
-            context_length=context_length,
+            context_length=ctx,
             architecture=self.architecture or "transformer",
+            hidden_size=self.hidden_size,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            kv_cache_storage=storage,
         )
 
 
@@ -117,6 +139,7 @@ def resolve_ollama(
     from stratumllm.resolve.ollama import (
         ensure_model_pulled,
         ollama_show_text,
+        parse_show_context_length,
         parse_show_parameters_b,
         resolve_ollama_blob_path,
         verify_parameter_count,
@@ -132,9 +155,11 @@ def resolve_ollama(
         display_name=canonical,
     )
     show_params: float | None = None
+    show_ctx: int | None = None
     try:
         show_text = ollama_show_text(model_ref)
         show_params = parse_show_parameters_b(show_text)
+        show_ctx = parse_show_context_length(show_text)
     except ModelResolutionError:
         show_text = ""
 
@@ -144,14 +169,18 @@ def resolve_ollama(
     elif param_b is None or param_b == 1.0:
         param_b = _guess_params_from_name(model_ref) or param_b
 
+    plan_ctx = resolved.context_length if resolved.context_length is not None else show_ctx
+
     resolved = resolved.model_copy(
         update={
             "name": canonical,
             "parameter_count_b": param_b if param_b is not None else 1.0,
+            "context_length": plan_ctx,
             "metadata": {
                 **resolved.metadata,
                 "stratum.ollama_ref": model_ref,
                 "stratum.ollama_show": show_text[:2000] if show_text else None,
+                "stratum.ollama_context_length": show_ctx,
             },
         }
     )
@@ -231,6 +260,9 @@ def _resolve_gguf_file(
     if param_b is None and quantization is not None:
         param_b = _estimate_params_from_weight(weight_gib, quantization)
 
+    attn = attention_footprint_from_gguf(metadata)
+    ctx_len = context_length_from_gguf(metadata)
+
     return ResolvedModel(
         name=name,
         weight_size_gib=weight_gib,
@@ -240,6 +272,10 @@ def _resolve_gguf_file(
         num_layers=num_layers,
         parameter_count_b=param_b if param_b is not None else 1.0,
         architecture=architecture,
+        hidden_size=attn.hidden_size,
+        num_kv_heads=attn.num_kv_heads,
+        head_dim=attn.head_dim,
+        context_length=ctx_len,
         metadata=metadata,
     )
 
