@@ -13,6 +13,10 @@ dependencies = [
     "psutil>=5.9",
 ]
 
+[project.scripts]
+stratumllm-plan = "stratumllm.cli:_entry_plan"
+stratumllm-run = "stratumllm.cli:_entry_run"
+
 [project.optional-dependencies]
 nvidia = ["pynvml>=11.5"]
 dev = ["pytest>=7.4", "mypy>=1.8", "ruff>=0.1"]

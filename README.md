@@ -46,5 +46,8 @@ print(result.text)
 ```
 
 ```bash
-python examples/run_inference.py qwen2.5:7b "Why is the sky blue?"
+pip install -e .
+stratumllm-plan qwen2.5:7b
+stratumllm-plan qwen2.5:7b --pull   # ollama pull if missing
+stratumllm-run qwen2.5:7b "Why is the sky blue?"
 ```
