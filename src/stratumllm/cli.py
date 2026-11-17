@@ -12,7 +12,7 @@ from stratumllm import (
     plan_deployment_from_model,
     run_inference,
 )
-from stratumllm.kv_cache import kv_storage_for_runtime
+from stratumllm.kv_cache import KvCacheStorage, parse_kv_cache_storage, resolve_kv_cache_storage
 from stratumllm.resolve import ResolvedModel
 from stratumllm.runtime import RuntimeKind, infer_runtime_kind
 from stratumllm.strategies import (
@@ -44,11 +44,19 @@ def _print_strategy(strategy: FullGPUStrategy | DistributedStrategy | Stratified
         print("Ollama options:", strategy.to_ollama_options())
 
 
+def _kv_storage_for_cli(flag: str | None, runtime: RuntimeKind) -> KvCacheStorage:
+    explicit = parse_kv_cache_storage(flag) if flag else None
+    return resolve_kv_cache_storage(explicit=explicit, runtime=runtime)
+
+
 def _print_resolved(resolved: ResolvedModel) -> None:
     quant = resolved.quantization.value if resolved.quantization else "unknown"
     layers = resolved.num_layers if resolved.num_layers is not None else "?"
     print(f"Resolved: {resolved.name} ({resolved.source.value})")
     print(f"  weights: {resolved.weight_size_gib:.2f} GiB | layers: {layers} | quant: {quant}")
+    qsrc = resolved.metadata.get("stratum.quantization_source")
+    if qsrc:
+        print(f"  quant source: {qsrc}")
     if resolved.parameter_count_b is not None:
         print(f"  params: {resolved.parameter_count_b:.1f}B")
     if resolved.context_length is not None:
@@ -116,6 +124,12 @@ def plan_main(argv: list[str] | None = None) -> int:
         default="auto",
         help="Runtime for KV storage assumptions (auto: .gguf → llama.cpp, else Ollama)",
     )
+    parser.add_argument(
+        "--kv-storage",
+        default=None,
+        metavar="DTYPE",
+        help="K/V cache dtype for planning: f16, q8_0, q4_0 (default: OLLAMA_KV_CACHE_TYPE or f16)",
+    )
     args = parser.parse_args(argv)
 
     hw = discover_hardware_profile()
@@ -126,6 +140,8 @@ def plan_main(argv: list[str] | None = None) -> int:
     if args.model and not args.manual:
         runtime: RuntimeKind = args.runtime  # type: ignore[assignment]
         kind = infer_runtime_kind(args.model, runtime)
+        kv_explicit = parse_kv_cache_storage(args.kv_storage) if args.kv_storage else None
+        storage = _kv_storage_for_cli(args.kv_storage, kind)
         resolved, strategy = plan_deployment_from_model(
             args.model,
             hw,
@@ -134,17 +150,25 @@ def plan_main(argv: list[str] | None = None) -> int:
             pull_if_missing=args.pull,
             context_length=args.context,
             runtime=kind,
+            kv_cache_storage=kv_explicit,
         )
         spec = resolved.to_model_spec(
             context_length=args.context,
-            kv_cache_storage=kv_storage_for_runtime(kind),
+            kv_cache_storage=storage,
         )
         _print_resolved(resolved)
         _print_planning_spec(spec)
         _print_strategy(strategy)
         return 0
 
-    model = ModelSpec(name=args.name, parameter_count_b=args.params_b, context_length=args.context or 8192)
+    manual_rt: RuntimeKind = args.runtime if args.runtime != "auto" else "ollama"  # type: ignore[assignment]
+    manual_storage = _kv_storage_for_cli(args.kv_storage, manual_rt)
+    model = ModelSpec(
+        name=args.name,
+        parameter_count_b=args.params_b,
+        context_length=args.context or 8192,
+        kv_cache_storage=manual_storage,
+    )
     print(f"Model weights (~{model.quantization.value}): {model.estimated_weight_gib():.2f} GiB")
     _print_planning_spec(model)
     strategy = DeploymentStrategyEvaluator().evaluate(hw, model)
@@ -170,14 +194,22 @@ def run_main(argv: list[str] | None = None) -> int:
         metavar="TOKENS",
         help="Override context length for planning and num_ctx",
     )
+    parser.add_argument(
+        "--kv-storage",
+        default=None,
+        metavar="DTYPE",
+        help="K/V cache dtype: f16, q8_0, q4_0 (llama.cpp flags; Ollama uses server env)",
+    )
     args = parser.parse_args(argv)
 
+    kv_explicit = parse_kv_cache_storage(args.kv_storage) if args.kv_storage else None
     resolved, strategy, result = run_inference(
         args.model,
         args.prompt,
         runtime=args.runtime,  # type: ignore[arg-type]
         pull_if_missing=not args.no_pull,
         context_length=args.context,
+        kv_cache_storage=kv_explicit,
     )
     print(f"--- {result.runtime} ({strategy.kind.value}) ---")
     print(f"Model: {resolved.name} | weights: {resolved.weight_size_gib:.2f} GiB")

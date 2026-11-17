@@ -8,7 +8,7 @@ from typing import Literal
 from stratumllm.discovery import discover_hardware_profile
 from stratumllm.evaluator import DeploymentStrategyEvaluator, EvaluatorConfig
 from stratumllm.hardware import HardwareProfile
-from stratumllm.kv_cache import kv_storage_for_runtime
+from stratumllm.kv_cache import KvCacheStorage, resolve_kv_cache_storage
 from stratumllm.model_spec import ModelSpec
 from stratumllm.resolve import ResolvedModel, resolve_gguf, resolve_model
 from stratumllm.run import InferenceResult
@@ -61,6 +61,7 @@ def plan_deployment_from_model(
     strict: bool = False,
     pull_if_missing: bool = False,
     runtime: RuntimeKind = "auto",
+    kv_cache_storage: KvCacheStorage | None = None,
 ) -> tuple[ResolvedModel, DeploymentStrategy]:
     """Resolve Ollama name or GGUF path, then plan deployment."""
     resolved = resolve_model(
@@ -70,9 +71,10 @@ def plan_deployment_from_model(
         pull_if_missing=pull_if_missing,
     )
     kind = infer_runtime_kind(model_ref, runtime)
+    storage = resolve_kv_cache_storage(explicit=kv_cache_storage, runtime=kind)
     model = resolved.to_model_spec(
         context_length=context_length,
-        kv_cache_storage=kv_storage_for_runtime(kind),
+        kv_cache_storage=storage,
     )
     return resolved, plan_deployment(model, hardware, evaluator_config=evaluator_config)
 
@@ -84,6 +86,7 @@ def plan_deployment_from_gguf(
     evaluator_config: EvaluatorConfig | None = None,
     context_length: int | None = None,
     runtime: RuntimeKind = "llama.cpp",
+    kv_cache_storage: KvCacheStorage | None = None,
 ) -> tuple[ResolvedModel, DeploymentStrategy]:
     """
     Resolve a local GGUF artifact, then plan deployment.
@@ -92,9 +95,10 @@ def plan_deployment_from_gguf(
         Tuple of resolved footprint (audit trail) and strategy.
     """
     resolved = resolve_gguf(gguf_path)
+    storage = resolve_kv_cache_storage(explicit=kv_cache_storage, runtime=runtime)
     model = resolved.to_model_spec(
         context_length=context_length,
-        kv_cache_storage=kv_storage_for_runtime(runtime),
+        kv_cache_storage=storage,
     )
     return resolved, plan_deployment(model, hardware, evaluator_config=evaluator_config)
 
@@ -110,6 +114,7 @@ def run_inference(
     expect_parameter_count_b: float | None = None,
     strict: bool = False,
     context_length: int | None = None,
+    kv_cache_storage: KvCacheStorage | None = None,
     max_tokens: int = 256,
     ollama_base_url: str | None = None,
 ) -> tuple[ResolvedModel, DeploymentStrategy, InferenceResult]:
@@ -133,7 +138,9 @@ def run_inference(
         strict=strict,
         pull_if_missing=pull_if_missing and use_ollama,
         runtime=kind,
+        kv_cache_storage=kv_cache_storage,
     )
+    storage = resolve_kv_cache_storage(explicit=kv_cache_storage, runtime=kind)
     num_ctx = (
         context_length
         if context_length is not None
@@ -147,6 +154,7 @@ def run_inference(
             strategy,
             max_tokens=max_tokens,
             num_ctx=num_ctx,
+            kv_cache_storage=storage,
         )
         return resolved, strategy, result
 

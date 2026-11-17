@@ -3,15 +3,52 @@
 from __future__ import annotations
 
 from stratumllm import ModelSpec
-from stratumllm.kv_cache import KvCacheStorage, kv_storage_for_runtime
+from stratumllm.kv_cache import (
+    KvCacheStorage,
+    llama_cpp_cache_cli_args,
+    parse_kv_cache_storage,
+    resolve_kv_cache_storage,
+)
 
 
 def test_f16_element_bytes() -> None:
     assert KvCacheStorage.F16.element_bytes() == 2.0
 
 
-def test_plan_matches_ollama_runtime() -> None:
-    assert kv_storage_for_runtime("ollama") is KvCacheStorage.F16
+def test_q4_element_bytes() -> None:
+    assert KvCacheStorage.Q4_0.element_bytes() == 0.5
+
+
+def test_resolve_ollama_defaults_f16(monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_KV_CACHE_TYPE", raising=False)
+    assert resolve_kv_cache_storage(runtime="ollama") is KvCacheStorage.F16
+
+
+def test_resolve_ollama_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "q8_0")
+    assert resolve_kv_cache_storage(runtime="ollama") is KvCacheStorage.Q8_0
+
+
+def test_explicit_overrides_env(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "q8_0")
+    assert (
+        resolve_kv_cache_storage(explicit=KvCacheStorage.Q4_0, runtime="ollama")
+        is KvCacheStorage.Q4_0
+    )
+
+
+def test_parse_kv_aliases() -> None:
+    assert parse_kv_cache_storage("q8") is KvCacheStorage.Q8_0
+
+
+def test_llama_cpp_quant_cache_flags() -> None:
+    args = llama_cpp_cache_cli_args(KvCacheStorage.Q8_0)
+    assert "--flash-attn" in args
+    assert "q8_0" in args
+
+
+def test_llama_cpp_f16_no_extra_flags() -> None:
+    assert llama_cpp_cache_cli_args(KvCacheStorage.F16) == []
 
 
 def test_q8_halves_kv_vs_f16() -> None:

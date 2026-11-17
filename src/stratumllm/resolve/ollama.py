@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from stratumllm.exceptions import ModelResolutionError
+from stratumllm.model_spec import QuantizationKind
 
 OLLAMA_MODEL_LAYER = "application/vnd.ollama.image.model"
 _PARAM_TOLERANCE = 0.12
@@ -195,6 +196,34 @@ def parse_show_context_length(show_text: str) -> int | None:
         return None
     value = int(match.group(1))
     return value if value > 0 else None
+
+
+def parse_show_quantization_label(show_text: str) -> str | None:
+    """Parse ``quantization`` line from ``ollama show`` output."""
+    match = _SHOW_QUANT.search(show_text)
+    if not match:
+        return None
+    label = match.group(1).strip()
+    return label if label else None
+
+
+_SHOW_QUANT_TO_KIND: dict[str, QuantizationKind] = {
+    "q4_k_m": QuantizationKind.Q4_K_M,
+    "q4_0": QuantizationKind.Q4_0,
+    "q5_k_m": QuantizationKind.Q5_K_M,
+    "q8_0": QuantizationKind.Q8_0,
+    "f16": QuantizationKind.F16,
+    "fp16": QuantizationKind.F16,
+}
+
+
+def quantization_from_show(show_text: str) -> QuantizationKind | None:
+    """Map ``ollama show`` quantization label to ``QuantizationKind``."""
+    label = parse_show_quantization_label(show_text)
+    if label is None:
+        return None
+    key = label.lower().replace("-", "_")
+    return _SHOW_QUANT_TO_KIND.get(key)
 
 
 def verify_parameter_count(

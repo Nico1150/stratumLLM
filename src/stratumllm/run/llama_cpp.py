@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from stratumllm.exceptions import InferenceError
+from stratumllm.kv_cache import KvCacheStorage, llama_cpp_cache_cli_args
 from stratumllm.resolve import ResolvedModel
 from stratumllm.run import InferenceResult, strategy_to_llama_cpp_cli_args
 from stratumllm.strategies import DeploymentStrategy
@@ -29,6 +30,7 @@ def llama_cpp_generate(
     llama_cli: str = "llama-cli",
     max_tokens: int = 256,
     num_ctx: int | None = None,
+    kv_cache_storage: KvCacheStorage | None = None,
     extra_args: list[str] | None = None,
 ) -> InferenceResult:
     """
@@ -55,6 +57,8 @@ def llama_cpp_generate(
         *strategy_to_llama_cpp_cli_args(strategy),
         *(extra_args or []),
     ]
+    if kv_cache_storage is not None:
+        cmd.extend(llama_cpp_cache_cli_args(kv_cache_storage))
     if num_ctx is not None:
         cmd.extend(["-c", str(num_ctx)])
     try:

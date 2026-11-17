@@ -141,6 +141,8 @@ def resolve_ollama(
         ollama_show_text,
         parse_show_context_length,
         parse_show_parameters_b,
+        parse_show_quantization_label,
+        quantization_from_show,
         resolve_ollama_blob_path,
         verify_parameter_count,
     )
@@ -171,16 +173,27 @@ def resolve_ollama(
 
     plan_ctx = resolved.context_length if resolved.context_length is not None else show_ctx
 
+    quant = resolved.quantization
+    quant_source = "gguf" if quant is not None else None
+    show_quant_label = parse_show_quantization_label(show_text) if show_text else None
+    show_quant = quantization_from_show(show_text) if show_text else None
+    if quant is None and show_quant is not None:
+        quant = show_quant
+        quant_source = "ollama_show"
+
     resolved = resolved.model_copy(
         update={
             "name": canonical,
             "parameter_count_b": param_b if param_b is not None else 1.0,
             "context_length": plan_ctx,
+            "quantization": quant,
             "metadata": {
                 **resolved.metadata,
                 "stratum.ollama_ref": model_ref,
                 "stratum.ollama_show": show_text[:2000] if show_text else None,
                 "stratum.ollama_context_length": show_ctx,
+                "stratum.ollama_show_quantization": show_quant_label,
+                "stratum.quantization_source": quant_source,
             },
         }
     )
