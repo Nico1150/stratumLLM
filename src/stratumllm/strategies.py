@@ -25,6 +25,7 @@ class StrategyRationale(BaseModel):
     weight_gib: float
     vram_budget_gib: float
     ram_budget_gib: float
+    kv_cache_gib: float = Field(default=0.0, ge=0)
     notes: list[str] = Field(default_factory=list)
 
 

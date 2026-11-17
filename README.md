@@ -24,6 +24,8 @@ strategy = DeploymentStrategyEvaluator().evaluate(hw, model)
 print(strategy.kind, strategy.to_llama_cpp_kwargs())
 ```
 
+Planning subtracts **KV cache** from GPU/unified budgets from ``ModelSpec.context_length`` (plus the flat ``kv_cache_reserve_gib`` headroom on ``HardwareProfile``).
+
 ## Resolver (Ollama name o GGUF)
 
 ```python

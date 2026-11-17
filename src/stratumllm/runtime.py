@@ -12,11 +12,7 @@ from stratumllm.model_spec import ModelSpec
 from stratumllm.resolve import ResolvedModel, resolve_gguf, resolve_model
 from stratumllm.run import InferenceResult
 from stratumllm.run.llama_cpp import llama_cpp_generate
-from stratumllm.run.ollama import (
-    ensure_model_pulled,
-    ensure_ollama_available,
-    ollama_generate,
-)
+from stratumllm.run.ollama import ensure_ollama_available, ollama_generate
 from stratumllm.strategies import DeploymentStrategy
 
 RuntimeKind = Literal["ollama", "llama.cpp", "auto"]

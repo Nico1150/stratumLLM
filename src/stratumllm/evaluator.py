@@ -78,20 +78,21 @@ class DeploymentStrategyEvaluator:
             InsufficientResourcesError: If the model cannot be placed under constraints.
         """
         weight_gib = model.estimated_weight_gib()
+        kv_gib = model.estimated_kv_cache_gib()
         if hardware.unified_memory:
-            return self._evaluate_unified(hardware, model, weight_gib)
-        return self._evaluate_discrete(hardware, model, weight_gib)
+            return self._evaluate_unified(hardware, model, weight_gib, kv_gib)
+        return self._evaluate_discrete(hardware, model, weight_gib, kv_gib)
 
     def _evaluate_discrete(
-        self, hardware: HardwareProfile, model: ModelSpec, weight_gib: float
+        self, hardware: HardwareProfile, model: ModelSpec, weight_gib: float, kv_gib: float
     ) -> DeploymentStrategy:
-        vram_total_budget = hardware.vram_budget_gib()
+        vram_total_budget = hardware.vram_budget_gib(model=model)
         ram_budget = hardware.ram_budget_gib()
 
         if not hardware.gpus:
-            return self._cpu_only_or_fail(hardware, model, weight_gib, ram_budget)
+            return self._cpu_only_or_fail(hardware, model, weight_gib, ram_budget, kv_gib)
 
-        best_single = self._best_single_gpu(hardware, weight_gib)
+        best_single = self._best_single_gpu(hardware, model, weight_gib)
         if best_single is not None:
             gpu, budget = best_single
             return self._full_gpu(
@@ -100,6 +101,7 @@ class DeploymentStrategyEvaluator:
                 weight_gib,
                 budget,
                 ram_budget,
+                kv_gib,
                 summary="Model fits entirely in single-GPU VRAM budget.",
             )
 
@@ -108,9 +110,11 @@ class DeploymentStrategyEvaluator:
             and model.parameter_count_b >= self._config.distributed_min_params_b
             and weight_gib <= vram_total_budget
         ):
-            return self._build_distributed(hardware, model, weight_gib, vram_total_budget, ram_budget)
+            return self._build_distributed(
+                hardware, model, weight_gib, kv_gib, vram_total_budget, ram_budget
+            )
 
-        offload = self._build_stratified_discrete(hardware, model, weight_gib, ram_budget)
+        offload = self._build_stratified_discrete(hardware, model, weight_gib, kv_gib, ram_budget)
         if offload is not None:
             return offload
 
@@ -120,13 +124,13 @@ class DeploymentStrategyEvaluator:
         )
 
     def _evaluate_unified(
-        self, hardware: HardwareProfile, model: ModelSpec, weight_gib: float
+        self, hardware: HardwareProfile, model: ModelSpec, weight_gib: float, kv_gib: float
     ) -> DeploymentStrategy:
         ram_budget = hardware.ram_budget_gib()
-        pool_budget = hardware.unified_weight_budget_gib()
+        pool_budget = hardware.unified_weight_budget_gib(model)
 
         if not hardware.gpus:
-            return self._cpu_only_or_fail(hardware, model, weight_gib, pool_budget)
+            return self._cpu_only_or_fail(hardware, model, weight_gib, pool_budget, kv_gib)
 
         if weight_gib > pool_budget:
             raise InsufficientResourcesError(
@@ -153,6 +157,7 @@ class DeploymentStrategyEvaluator:
                 weight_gib,
                 pool_budget,
                 ram_budget,
+                kv_gib,
                 summary="Model fits unified memory pool; full Metal residency.",
                 host_memory_unified=True,
             )
@@ -161,6 +166,7 @@ class DeploymentStrategyEvaluator:
             hardware,
             model,
             weight_gib,
+            kv_gib,
             metal_weight_budget,
             pool_budget,
         )
@@ -183,6 +189,7 @@ class DeploymentStrategyEvaluator:
         weight_gib: float,
         budget_gib: float,
         ram_budget: float,
+        kv_gib: float,
         *,
         summary: str,
         host_memory_unified: bool = False,
@@ -190,6 +197,8 @@ class DeploymentStrategyEvaluator:
         notes = [f"Selected GPU {gpu.index} ({gpu.name})."]
         if host_memory_unified:
             notes.append("Unified memory pool; all layers on Metal.")
+        if kv_gib > 0:
+            notes.append(f"KV cache planning reserve: ~{kv_gib:.2f} GiB.")
         return FullGPUStrategy(
             device_index=gpu.index,
             device_name=gpu.name,
@@ -199,16 +208,17 @@ class DeploymentStrategyEvaluator:
                 weight_gib=weight_gib,
                 vram_budget_gib=budget_gib,
                 ram_budget_gib=ram_budget,
+                kv_cache_gib=kv_gib,
                 notes=notes,
             ),
         )
 
     def _best_single_gpu(
-        self, hardware: HardwareProfile, weight_gib: float
+        self, hardware: HardwareProfile, model: ModelSpec, weight_gib: float
     ) -> tuple[GpuDevice, float] | None:
         candidates: list[tuple[GpuDevice, float]] = []
         for gpu in hardware.gpus:
-            budget = hardware.vram_budget_gib(device_index=gpu.index)
+            budget = hardware.vram_budget_gib(device_index=gpu.index, model=model)
             if weight_gib <= budget:
                 candidates.append((gpu, budget))
         if not candidates:
@@ -221,10 +231,13 @@ class DeploymentStrategyEvaluator:
         hardware: HardwareProfile,
         model: ModelSpec,
         weight_gib: float,
+        kv_gib: float,
         vram_total_budget: float,
         ram_budget: float,
     ) -> DistributedStrategy:
-        budgets = [hardware.vram_budget_gib(device_index=g.index) for g in hardware.gpus]
+        budgets = [
+            hardware.vram_budget_gib(device_index=g.index, model=model) for g in hardware.gpus
+        ]
         total = sum(budgets)
         if total <= 0:
             raise InsufficientResourcesError("No usable VRAM budget on any GPU.")
@@ -242,6 +255,7 @@ class DeploymentStrategyEvaluator:
                 weight_gib=weight_gib,
                 vram_budget_gib=vram_total_budget,
                 ram_budget_gib=ram_budget,
+                kv_cache_gib=kv_gib,
                 notes=[
                     f"Layer/weight split fractions: {[round(x, 3) for x in tensor_split]}",
                     "Requires runtime support for multi-GPU tensor parallelism.",
@@ -254,14 +268,16 @@ class DeploymentStrategyEvaluator:
         hardware: HardwareProfile,
         model: ModelSpec,
         weight_gib: float,
+        kv_gib: float,
         ram_budget: float,
     ) -> StratifiedOffloadStrategy | None:
         primary = self._primary_gpu(hardware)
-        vram_budget = hardware.vram_budget_gib(device_index=primary.index)
+        vram_budget = hardware.vram_budget_gib(device_index=primary.index, model=model)
         return self._build_stratified_layers(
             hardware=hardware,
             model=model,
             weight_gib=weight_gib,
+            kv_gib=kv_gib,
             accelerator_weight_budget=vram_budget,
             pool_budget=weight_gib,
             ram_budget=ram_budget,
@@ -274,6 +290,7 @@ class DeploymentStrategyEvaluator:
         hardware: HardwareProfile,
         model: ModelSpec,
         weight_gib: float,
+        kv_gib: float,
         metal_weight_budget: float,
         pool_budget: float,
     ) -> StratifiedOffloadStrategy | None:
@@ -282,6 +299,7 @@ class DeploymentStrategyEvaluator:
             hardware=hardware,
             model=model,
             weight_gib=weight_gib,
+            kv_gib=kv_gib,
             accelerator_weight_budget=metal_weight_budget,
             pool_budget=pool_budget,
             ram_budget=hardware.ram_budget_gib(),
@@ -296,6 +314,7 @@ class DeploymentStrategyEvaluator:
         hardware: HardwareProfile,
         model: ModelSpec,
         weight_gib: float,
+        kv_gib: float,
         accelerator_weight_budget: float,
         pool_budget: float,
         ram_budget: float,
@@ -362,6 +381,7 @@ class DeploymentStrategyEvaluator:
                 weight_gib=weight_gib,
                 vram_budget_gib=accelerator_weight_budget,
                 ram_budget_gib=ram_budget,
+                kv_cache_gib=kv_gib,
                 notes=[
                     f"{max_gpu_layers}/{total_layers} layers on GPU ({primary.name}).",
                     f"~{cpu_weight:.2f} GiB weights off accelerator path.",
@@ -375,6 +395,7 @@ class DeploymentStrategyEvaluator:
         model: ModelSpec,
         weight_gib: float,
         ram_budget: float,
+        kv_gib: float,
     ) -> DeploymentStrategy:
         total_layers = model.resolved_num_layers()
         if not self._config.allow_cpu_only:
@@ -406,6 +427,7 @@ class DeploymentStrategyEvaluator:
                 weight_gib=weight_gib,
                 vram_budget_gib=0.0,
                 ram_budget_gib=ram_budget,
+                kv_cache_gib=kv_gib,
                 notes=["Enable only for smoke tests; expect low throughput."],
             ),
         )
@@ -417,6 +439,7 @@ class DeploymentStrategyEvaluator:
         weight_gib: float,
         vram_budget_gib: float,
         ram_budget_gib: float,
+        kv_cache_gib: float = 0.0,
         notes: list[str],
     ) -> StrategyRationale:
         return StrategyRationale(
@@ -424,5 +447,6 @@ class DeploymentStrategyEvaluator:
             weight_gib=round(weight_gib, 3),
             vram_budget_gib=round(vram_budget_gib, 3),
             ram_budget_gib=round(ram_budget_gib, 3),
+            kv_cache_gib=round(kv_cache_gib, 3),
             notes=notes,
         )

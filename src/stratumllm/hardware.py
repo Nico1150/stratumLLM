@@ -8,6 +8,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from stratumllm.exceptions import ConfigurationError
+from stratumllm.model_spec import ModelSpec
 
 
 class AcceleratorKind(str, Enum):
@@ -129,11 +130,23 @@ class HardwareProfile(BaseModel):
         """Sum of effective VRAM across all GPUs."""
         return sum(g.effective_vram_gib() for g in self.gpus)
 
-    def vram_budget_gib(self, device_index: int | None = None) -> float:
+    def extra_kv_cache_gib(self, model: ModelSpec) -> float:
+        """
+        KV footprint beyond the flat ``kv_cache_reserve_gib`` already deducted.
+
+        ``kv_cache_reserve_gib`` covers runtime overhead; ``context_length``-scaled KV
+        is added here for placement math.
+        """
+        return max(0.0, model.estimated_kv_cache_gib() - self.kv_cache_reserve_gib)
+
+    def vram_budget_gib(
+        self, device_index: int | None = None, *, model: ModelSpec | None = None
+    ) -> float:
         """
         Usable dedicated VRAM on discrete GPU hosts (not used for UMA feasibility).
 
         For multi-GPU planning, ``device_index`` selects a single card; ``None`` sums budgets.
+        When ``model`` is set, subtracts context-scaled KV beyond ``kv_cache_reserve_gib``.
         """
         if not self.gpus:
             return 0.0
@@ -146,18 +159,28 @@ class HardwareProfile(BaseModel):
         for gpu in devices:
             raw = gpu.effective_vram_gib() - self.kv_cache_reserve_gib
             budgets.append(max(0.0, raw) * self.gpu_utilization_target)
-        return sum(budgets)
+        total = sum(budgets)
+        if model is None:
+            return total
+        return max(0.0, total - self.extra_kv_cache_gib(model))
 
     def ram_budget_gib(self) -> float:
         """Usable system RAM for CPU-offloaded weights (discrete GPU hosts)."""
         return self.resolved_ram_available_gib() * self.ram_utilization_target
 
-    def unified_weight_budget_gib(self) -> float:
-        """Hard cap: total model weights that may reside in a unified memory pool."""
-        return max(
+    def unified_weight_budget_gib(self, model: ModelSpec | None = None) -> float:
+        """
+        Hard cap: total model weights that may reside in a unified memory pool.
+
+        With ``model``, also reserves context-scaled KV beyond ``kv_cache_reserve_gib``.
+        """
+        base = max(
             0.0,
             (self.system_ram_gib - self.kv_cache_reserve_gib) * self.ram_utilization_target,
         )
+        if model is None:
+            return base
+        return max(0.0, base - self.extra_kv_cache_gib(model))
 
     def metal_residency_weight_budget_gib(self) -> float:
         """
