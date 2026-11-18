@@ -18,9 +18,18 @@ from stratumllm.kv_cache import (
     parse_kv_cache_storage,
     resolve_kv_cache_storage,
 )
+from stratumllm.plan_output import (
+    build_plan_document,
+    collect_ollama_kv_warnings,
+    emit_plan_json,
+    parse_context_sweep,
+    print_context_sweep_table,
+    run_context_sweep,
+)
 from stratumllm.resolve import ResolvedModel
 from stratumllm.runtime import RuntimeKind, infer_runtime_kind
 from stratumllm.strategies import (
+    DeploymentStrategy,
     DistributedStrategy,
     FullGPUStrategy,
     StratifiedOffloadStrategy,
@@ -86,11 +95,55 @@ def _emit_ollama_kv_notes(storage: KvCacheStorage, runtime: RuntimeKind) -> None
         print(line)
 
 
+def _emit_ollama_kv_warnings(lines: list[str], *, as_json: bool) -> None:
+    if not lines or as_json:
+        return
+    for line in lines:
+        print(line, file=sys.stderr)
+
+
 def _print_planning_spec(spec: ModelSpec) -> None:
     print("Planning spec:")
     print(f"  context_length: {spec.context_length}")
     print(f"  kv_cache_storage: {spec.kv_cache_storage.value} ({spec.kv_cache_storage.element_bytes()} B/elem)")
     print(f"  estimated_kv_cache: {spec.estimated_kv_cache_gib():.2f} GiB")
+
+
+def _finish_plan_output(
+    *,
+    as_json: bool,
+    hw,
+    kind: RuntimeKind,
+    spec: ModelSpec,
+    strategy: DeploymentStrategy,
+    resolved: ResolvedModel | None,
+    storage: KvCacheStorage,
+    ollama_warnings: list[str],
+    sweep_rows: list[dict] | None,
+) -> None:
+    if as_json:
+        doc = build_plan_document(
+            hardware=hw,
+            runtime=kind,
+            planning_spec=spec,
+            strategy=strategy,
+            resolved=resolved,
+            kv_storage=storage,
+            ollama_kv_warnings=ollama_warnings or None,
+            context_sweep=sweep_rows,
+        )
+        emit_plan_json(doc)
+        return
+
+    if resolved is not None:
+        _print_resolved(resolved)
+    _print_planning_spec(spec)
+    _print_strategy(strategy)
+    _emit_ollama_kv_notes(storage, kind)
+    _emit_ollama_kv_warnings(ollama_warnings, as_json=False)
+    if sweep_rows is not None:
+        print()
+        print_context_sweep_table(sweep_rows)
 
 
 def plan_main(argv: list[str] | None = None) -> int:
@@ -131,6 +184,12 @@ def plan_main(argv: list[str] | None = None) -> int:
         help="Override context length for KV/planning (default: artifact or 4096)",
     )
     parser.add_argument(
+        "--context-sweep",
+        default=None,
+        metavar="SPEC",
+        help="Compare strategies across contexts: 4096,8192 or range 4096:32768:4096",
+    )
+    parser.add_argument(
         "--runtime",
         choices=("auto", "ollama", "llama.cpp"),
         default="auto",
@@ -142,12 +201,32 @@ def plan_main(argv: list[str] | None = None) -> int:
         metavar="DTYPE",
         help="K/V cache dtype for planning: f16, q8_0, q4_0 (default: OLLAMA_KV_CACHE_TYPE or f16)",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a single JSON document (hardware, spec, strategy, optional sweep)",
+    )
+    parser.add_argument(
+        "--check-ollama-kv",
+        action="store_true",
+        help="Warn if local ollama process OLLAMA_KV_CACHE_TYPE may not match the plan",
+    )
+    parser.add_argument(
+        "--strict-ollama-kv",
+        action="store_true",
+        help="Fail when Ollama server KV dtype cannot be verified or does not match",
+    )
     args = parser.parse_args(argv)
 
     hw = discover_hardware_profile()
-    print(f"Hardware: {hw.total_vram_gib():.1f} GiB VRAM, {hw.system_ram_gib:.1f} GiB RAM")
-    if hw.unified_memory:
-        print(f"Unified pool budget: {hw.unified_weight_budget_gib():.1f} GiB")
+    if not args.json:
+        print(f"Hardware: {hw.total_vram_gib():.1f} GiB VRAM, {hw.system_ram_gib:.1f} GiB RAM")
+        if hw.unified_memory:
+            print(f"Unified pool budget: {hw.unified_weight_budget_gib():.1f} GiB")
+
+    sweep_contexts: list[int] | None = None
+    if args.context_sweep:
+        sweep_contexts = parse_context_sweep(args.context_sweep)
 
     if args.model and not args.manual:
         runtime: RuntimeKind = args.runtime  # type: ignore[assignment]
@@ -168,10 +247,29 @@ def plan_main(argv: list[str] | None = None) -> int:
             context_length=args.context,
             kv_cache_storage=storage,
         )
-        _print_resolved(resolved)
-        _print_planning_spec(spec)
-        _print_strategy(strategy)
-        _emit_ollama_kv_notes(storage, kind)
+        ollama_warnings = collect_ollama_kv_warnings(
+            storage, kind, check=args.check_ollama_kv, strict=args.strict_ollama_kv
+        )
+        sweep_rows = None
+        if sweep_contexts is not None:
+            sweep_rows = run_context_sweep(
+                hw,
+                resolved=resolved,
+                manual_spec=None,
+                storage=storage,
+                contexts=sweep_contexts,
+            )
+        _finish_plan_output(
+            as_json=args.json,
+            hw=hw,
+            kind=kind,
+            spec=spec,
+            strategy=strategy,
+            resolved=resolved,
+            storage=storage,
+            ollama_warnings=ollama_warnings,
+            sweep_rows=sweep_rows,
+        )
         return 0
 
     manual_rt: RuntimeKind = args.runtime if args.runtime != "auto" else "ollama"  # type: ignore[assignment]
@@ -182,11 +280,32 @@ def plan_main(argv: list[str] | None = None) -> int:
         context_length=args.context or 8192,
         kv_cache_storage=manual_storage,
     )
-    print(f"Model weights (~{model.quantization.value}): {model.estimated_weight_gib():.2f} GiB")
-    _print_planning_spec(model)
+    if not args.json:
+        print(f"Model weights (~{model.quantization.value}): {model.estimated_weight_gib():.2f} GiB")
     strategy = DeploymentStrategyEvaluator().evaluate(hw, model)
-    _print_strategy(strategy)
-    _emit_ollama_kv_notes(manual_storage, manual_rt)
+    ollama_warnings = collect_ollama_kv_warnings(
+        manual_storage, manual_rt, check=args.check_ollama_kv, strict=args.strict_ollama_kv
+    )
+    sweep_rows = None
+    if sweep_contexts is not None:
+        sweep_rows = run_context_sweep(
+            hw,
+            resolved=None,
+            manual_spec=model,
+            storage=manual_storage,
+            contexts=sweep_contexts,
+        )
+    _finish_plan_output(
+        as_json=args.json,
+        hw=hw,
+        kind=manual_rt,
+        spec=model,
+        strategy=strategy,
+        resolved=None,
+        storage=manual_storage,
+        ollama_warnings=ollama_warnings,
+        sweep_rows=sweep_rows,
+    )
     return 0
 
 
