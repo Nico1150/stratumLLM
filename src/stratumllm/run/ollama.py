@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import psutil
+
 from stratumllm.exceptions import ConfigurationError, InferenceError, ModelResolutionError
 from stratumllm.kv_cache import (
     KvCacheStorage,
@@ -48,6 +50,33 @@ class OllamaKvProbeResult:
 
     status: Literal["probed", "no_process", "unreadable"]
     server_storage: KvCacheStorage | None = None
+
+
+def _kv_from_psutil() -> KvCacheStorage | Literal["no_process", "unreadable"]:
+    """Cross-platform env scan (Linux, macOS, Windows) via psutil."""
+    saw_ollama = False
+    unreadable = False
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            name = (proc.info.get("name") or proc.name() or "").lower()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        if "ollama" not in name:
+            continue
+        saw_ollama = True
+        try:
+            raw = proc.environ().get("OLLAMA_KV_CACHE_TYPE", "").strip()
+        except (psutil.AccessDenied, psutil.ZombieProcess):
+            unreadable = True
+            continue
+        if raw:
+            return parse_kv_cache_storage(raw)
+        return KvCacheStorage.F16
+    if not saw_ollama:
+        return "no_process"
+    if unreadable:
+        return "unreadable"
+    return "unreadable"
 
 
 def _find_ollama_pids() -> list[int]:
@@ -109,6 +138,12 @@ def probe_ollama_server_kv_cache_type() -> OllamaKvProbeResult:
 
     When the variable is unset on the server, Ollama defaults to ``f16``.
     """
+    psutil_outcome = _kv_from_psutil()
+    if psutil_outcome not in ("no_process", "unreadable"):
+        return OllamaKvProbeResult(status="probed", server_storage=psutil_outcome)
+    if psutil_outcome == "no_process":
+        return OllamaKvProbeResult(status="no_process")
+
     pids = _find_ollama_pids()
     if not pids:
         return OllamaKvProbeResult(status="no_process")
@@ -118,6 +153,8 @@ def probe_ollama_server_kv_cache_type() -> OllamaKvProbeResult:
             outcome = _kv_from_linux_environ(pid)
         elif system == "Darwin":
             outcome = _kv_from_darwin_ps(pid)
+        elif system == "Windows":
+            continue
         else:
             return OllamaKvProbeResult(status="unreadable")
         if outcome == "unreadable":

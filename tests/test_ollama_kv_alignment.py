@@ -41,6 +41,14 @@ def test_check_mismatch_warns(monkeypatch) -> None:
     assert "q8_0" in notes[0]
 
 
-def test_probe_without_process() -> None:
+def test_probe_without_process(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "stratumllm.run.ollama._kv_from_psutil",
+        lambda: "no_process",
+    )
+    def _empty_pids() -> list[int]:
+        return []
+
+    monkeypatch.setattr("stratumllm.run.ollama._find_ollama_pids", _empty_pids)
     result = probe_ollama_server_kv_cache_type()
-    assert result.status in ("no_process", "probed", "unreadable")
+    assert result.status == "no_process"

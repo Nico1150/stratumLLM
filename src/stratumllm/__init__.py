@@ -37,6 +37,7 @@ from stratumllm.run.ollama import (
     ollama_generate,
     probe_ollama_server_kv_cache_type,
 )
+from stratumllm.run.ollama_ps import check_ollama_ps_alignment, planned_ollama_resident_gib
 from stratumllm.runtime import (
     plan_deployment,
     plan_deployment_from_gguf,
@@ -72,6 +73,7 @@ __all__ = [
     "build_plan_document",
     "build_run_document",
     "check_ollama_kv_alignment",
+    "check_ollama_ps_alignment",
     "discover_hardware_profile",
     "ensure_model_pulled",
     "hardware_from_dict",
@@ -82,6 +84,7 @@ __all__ = [
     "plan_deployment",
     "plan_deployment_from_gguf",
     "plan_deployment_from_model",
+    "planned_ollama_resident_gib",
     "probe_ollama_server_kv_cache_type",
     "resolve_gguf",
     "resolve_gguf_sharded",

@@ -49,6 +49,10 @@ stratumllm-run model.gguf "hola" --runtime llama.cpp --kv-storage q4_0 --context
 | `--json` | JSON con hardware, spec, estrategia y sweep (`stratumllm-run --json` incluye la respuesta) |
 | `--check-ollama-kv` | Avisa si el proceso local `ollama` no coincide con el plan |
 | `--strict-ollama-kv` | Falla si no se puede verificar o hay mismatch |
+| `--check-ollama-ps` | Tras `stratumllm-run`, compara `/api/ps` (VRAM y context) |
+| `--strict-ollama-ps` | Falla si `/api/ps` no cuadra con el plan |
+| `--max-cpu-offload-gib` | Tope de peso en CPU en offload (plan y run) |
+| `--uma-metal-fraction` | Fracción del pool unified en Metal |
 
 Ejemplo de sweep:
 

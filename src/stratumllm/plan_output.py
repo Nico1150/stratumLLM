@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from stratumllm.evaluator import DeploymentStrategyEvaluator, EvaluatorConfig
 from stratumllm.exceptions import ConfigurationError, InsufficientResourcesError
 from stratumllm.hardware import HardwareProfile
 from stratumllm.kv_cache import KvCacheStorage, ollama_serve_env_hints
@@ -47,10 +48,9 @@ def run_context_sweep(
     manual_spec: ModelSpec | None,
     storage: KvCacheStorage,
     contexts: list[int],
+    evaluator_config: EvaluatorConfig | None = None,
 ) -> list[dict[str, Any]]:
-    from stratumllm import DeploymentStrategyEvaluator
-
-    evaluator = DeploymentStrategyEvaluator()
+    evaluator = DeploymentStrategyEvaluator(evaluator_config)
     rows: list[dict[str, Any]] = []
     for ctx in contexts:
         if resolved is not None:
@@ -151,6 +151,7 @@ def build_run_document(
     inference_runtime: str,
     raw_response: dict[str, Any] | None = None,
     ollama_kv_warnings: list[str] | None = None,
+    ollama_ps_warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     doc: dict[str, Any] = {
         "hardware": _model_json(hardware),
@@ -171,6 +172,8 @@ def build_run_document(
         doc["ollama_serve_env"] = ollama_serve_env_hints(kv_storage)
     if ollama_kv_warnings:
         doc["ollama_kv_warnings"] = ollama_kv_warnings
+    if ollama_ps_warnings:
+        doc["ollama_ps_warnings"] = ollama_ps_warnings
     return doc
 
 

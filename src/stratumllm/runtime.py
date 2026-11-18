@@ -19,6 +19,7 @@ from stratumllm.run.ollama import (
     ensure_ollama_available,
     ollama_generate,
 )
+from stratumllm.run.ollama_ps import check_ollama_ps_alignment
 from stratumllm.strategies import DeploymentStrategy
 
 RuntimeKind = Literal["ollama", "llama.cpp", "auto"]
@@ -122,6 +123,8 @@ def run_inference(
     kv_cache_storage: KvCacheStorage | None = None,
     check_ollama_kv: bool = False,
     strict_ollama_kv: bool = False,
+    check_ollama_ps: bool = False,
+    strict_ollama_ps: bool = False,
     max_tokens: int = 256,
     ollama_base_url: str | None = None,
 ) -> tuple[ResolvedModel, DeploymentStrategy, InferenceResult]:
@@ -176,4 +179,13 @@ def run_inference(
         base_url=ollama_base_url,
         num_ctx=num_ctx,
     )
+    if check_ollama_ps or strict_ollama_ps:
+        for line in check_ollama_ps_alignment(
+            model_ref,
+            strategy,
+            planned_context=num_ctx,
+            base_url=ollama_base_url,
+            strict=strict_ollama_ps,
+        ):
+            warnings.warn(line, UserWarning, stacklevel=2)
     return resolved, strategy, result

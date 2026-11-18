@@ -12,6 +12,7 @@ from stratumllm import (
     plan_deployment_from_model,
     run_inference,
 )
+from stratumllm.cli_policy import add_evaluator_policy_args, build_evaluator_config
 from stratumllm.kv_cache import (
     KvCacheStorage,
     format_ollama_kv_serve_lines,
@@ -218,7 +219,9 @@ def plan_main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Fail when Ollama server KV dtype cannot be verified or does not match",
     )
+    add_evaluator_policy_args(parser)
     args = parser.parse_args(argv)
+    eval_config = build_evaluator_config(args)
 
     hw = discover_hardware_profile()
     if not args.json:
@@ -238,6 +241,7 @@ def plan_main(argv: list[str] | None = None) -> int:
         resolved, strategy = plan_deployment_from_model(
             args.model,
             hw,
+            evaluator_config=eval_config,
             expect_parameter_count_b=args.expect_params_b,
             strict=args.strict,
             pull_if_missing=args.pull,
@@ -260,6 +264,7 @@ def plan_main(argv: list[str] | None = None) -> int:
                 manual_spec=None,
                 storage=storage,
                 contexts=sweep_contexts,
+                evaluator_config=eval_config,
             )
         _finish_plan_output(
             as_json=args.json,
@@ -284,7 +289,7 @@ def plan_main(argv: list[str] | None = None) -> int:
     )
     if not args.json:
         print(f"Model weights (~{model.quantization.value}): {model.estimated_weight_gib():.2f} GiB")
-    strategy = DeploymentStrategyEvaluator().evaluate(hw, model)
+    strategy = DeploymentStrategyEvaluator(eval_config).evaluate(hw, model)
     ollama_warnings = collect_ollama_kv_warnings(
         manual_storage, manual_rt, check=args.check_ollama_kv, strict=args.strict_ollama_kv
     )
@@ -296,6 +301,7 @@ def plan_main(argv: list[str] | None = None) -> int:
             manual_spec=model,
             storage=manual_storage,
             contexts=sweep_contexts,
+            evaluator_config=eval_config,
         )
     _finish_plan_output(
         as_json=args.json,
@@ -350,7 +356,19 @@ def run_main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit JSON with plan, resolved model, strategy, and inference text",
     )
+    parser.add_argument(
+        "--check-ollama-ps",
+        action="store_true",
+        help="Tras Ollama, comparar /api/ps (VRAM/context) con el plan",
+    )
+    parser.add_argument(
+        "--strict-ollama-ps",
+        action="store_true",
+        help="Falla si /api/ps no coincide con el plan",
+    )
+    add_evaluator_policy_args(parser)
     args = parser.parse_args(argv)
+    eval_config = build_evaluator_config(args)
 
     kind = infer_runtime_kind(args.model, args.runtime)  # type: ignore[arg-type]
     kv_explicit = parse_kv_cache_storage(args.kv_storage) if args.kv_storage else None
@@ -361,14 +379,19 @@ def run_main(argv: list[str] | None = None) -> int:
     resolved, strategy, result = run_inference(
         args.model,
         args.prompt,
+        evaluator_config=eval_config,
         runtime=args.runtime,  # type: ignore[arg-type]
         pull_if_missing=not args.no_pull,
         context_length=args.context,
         kv_cache_storage=kv_explicit,
         check_ollama_kv=args.check_ollama_kv,
         strict_ollama_kv=args.strict_ollama_kv,
+        check_ollama_ps=args.check_ollama_ps,
+        strict_ollama_ps=args.strict_ollama_ps,
     )
     if args.json:
+        from stratumllm.run.ollama_ps import check_ollama_ps_alignment
+
         spec = resolved.to_model_spec(
             context_length=args.context,
             kv_cache_storage=storage,
@@ -376,6 +399,17 @@ def run_main(argv: list[str] | None = None) -> int:
         hw = discover_hardware_profile()
         kv_warnings = collect_ollama_kv_warnings(
             storage, kind, check=args.check_ollama_kv, strict=False
+        )
+        num_ctx = args.context if args.context is not None else (resolved.context_length or 4096)
+        ps_warnings = (
+            check_ollama_ps_alignment(
+                args.model,
+                strategy,
+                planned_context=num_ctx,
+                strict=False,
+            )
+            if kind == "ollama" and args.check_ollama_ps
+            else []
         )
         emit_run_json(
             build_run_document(
@@ -390,6 +424,7 @@ def run_main(argv: list[str] | None = None) -> int:
                 inference_runtime=result.runtime,
                 raw_response=result.raw,
                 ollama_kv_warnings=kv_warnings or None,
+                ollama_ps_warnings=ps_warnings or None,
             )
         )
         return 0
