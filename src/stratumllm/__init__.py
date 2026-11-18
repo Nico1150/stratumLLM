@@ -37,6 +37,7 @@ from stratumllm.run.ollama import (
     ollama_generate,
     probe_ollama_server_kv_cache_type,
 )
+from stratumllm.run.ollama_env import sync_ollama_kv_from_plan, write_ollama_env_file
 from stratumllm.run.ollama_ps import check_ollama_ps_alignment, planned_ollama_resident_gib
 from stratumllm.runtime import (
     plan_deployment,
@@ -94,4 +95,6 @@ __all__ = [
     "run_context_sweep",
     "run_inference",
     "strategy_to_ollama_options",
+    "sync_ollama_kv_from_plan",
+    "write_ollama_env_file",
 ]

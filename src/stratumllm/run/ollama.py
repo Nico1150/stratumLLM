@@ -17,6 +17,7 @@ import psutil
 from stratumllm.exceptions import ConfigurationError, InferenceError, ModelResolutionError
 from stratumllm.kv_cache import (
     KvCacheStorage,
+    format_ollama_kv_mismatch_lines,
     ollama_serve_command,
     parse_kv_cache_storage,
 )
@@ -192,13 +193,10 @@ def check_ollama_kv_alignment(
             raise ConfigurationError(msg)
         return [f"warning: {msg}"]
     if probe.server_storage != planned:
-        msg = (
-            f"Ollama server KV cache is {probe.server_storage.value} but the plan uses "
-            f"{planned.value}. Restart with `{ollama_serve_command(planned)}`."
-        )
+        lines = format_ollama_kv_mismatch_lines(planned, probe.server_storage)
         if strict:
-            raise ConfigurationError(msg)
-        return [f"warning: {msg}"]
+            raise ConfigurationError(lines[0].removeprefix("warning: "))
+        return lines
     return []
 
 

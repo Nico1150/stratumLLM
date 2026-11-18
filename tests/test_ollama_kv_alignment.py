@@ -36,9 +36,10 @@ def test_check_mismatch_warns(monkeypatch) -> None:
         lambda: OllamaKvProbeResult(status="probed", server_storage=KvCacheStorage.F16),
     )
     notes = check_ollama_kv_alignment(KvCacheStorage.Q8_0)
-    assert len(notes) == 1
+    assert len(notes) >= 3
     assert "warning:" in notes[0]
     assert "q8_0" in notes[0]
+    assert any("launchctl setenv" in line for line in notes)
 
 
 def test_probe_without_process(monkeypatch) -> None:

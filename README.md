@@ -44,7 +44,10 @@ stratumllm-run model.gguf "hola" --runtime llama.cpp --kv-storage q4_0 --context
 | Flag | Efecto |
 |------|--------|
 | `--context` | Longitud para sizing de KV y (en run) `num_ctx` |
-| `--kv-storage` | Dtype del KV en el **plan** (`f16`, `q8_0`, `q4_0`) |
+| `--kv-storage` | Dtype del KV en el plan; en Ollama también fija `OLLAMA_*` en este proceso y `launchctl` (macOS) |
+| `--restart-ollama` | Con `--kv-storage`: mata y relanza `ollama serve` con esas variables (destructivo) |
+| `--write-ollama-env FILE` | Genera script `export` para `source` antes de `ollama serve` |
+| `--no-check-ollama-kv` | Desactiva la verificación KV automática al usar `--kv-storage` |
 | `--context-sweep` | Tabla estrategia vs varios contextos (`4096,8192` o `4096:32768:4096`) |
 | `--json` | JSON con hardware, spec, estrategia y sweep (`stratumllm-run --json` incluye la respuesta) |
 | `--check-ollama-kv` | Avisa si el proceso local `ollama` no coincide con el plan |

@@ -12,6 +12,11 @@ from stratumllm import (
     plan_deployment_from_model,
     run_inference,
 )
+from stratumllm.cli_ollama_kv import (
+    effective_check_ollama_kv,
+    sync_ollama_kv_if_explicit,
+    write_ollama_env_if_requested,
+)
 from stratumllm.cli_policy import add_evaluator_policy_args, build_evaluator_config
 from stratumllm.kv_cache import (
     KvCacheStorage,
@@ -212,12 +217,28 @@ def plan_main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check-ollama-kv",
         action="store_true",
-        help="Warn if local ollama process OLLAMA_KV_CACHE_TYPE may not match the plan",
+        help="Verificar OLLAMA_KV_CACHE_TYPE del daemon (auto con --kv-storage)",
+    )
+    parser.add_argument(
+        "--no-check-ollama-kv",
+        action="store_true",
+        help="No verificar KV del servidor aunque uses --kv-storage",
     )
     parser.add_argument(
         "--strict-ollama-kv",
         action="store_true",
         help="Fail when Ollama server KV dtype cannot be verified or does not match",
+    )
+    parser.add_argument(
+        "--restart-ollama",
+        action="store_true",
+        help="Con --kv-storage: reinicia ollama serve con OLLAMA_KV_CACHE_TYPE (destructivo)",
+    )
+    parser.add_argument(
+        "--write-ollama-env",
+        default=None,
+        metavar="FILE",
+        help="Escribe script export (source) con OLLAMA_KV_CACHE_TYPE del plan",
     )
     add_evaluator_policy_args(parser)
     args = parser.parse_args(argv)
@@ -238,6 +259,19 @@ def plan_main(argv: list[str] | None = None) -> int:
         kind = infer_runtime_kind(args.model, runtime)
         kv_explicit = parse_kv_cache_storage(args.kv_storage) if args.kv_storage else None
         storage = _kv_storage_for_cli(args.kv_storage, kind)
+        sync_ollama_kv_if_explicit(
+            kv_flag=args.kv_storage,
+            storage=storage,
+            runtime=kind,
+            restart_ollama=args.restart_ollama,
+            as_json=args.json,
+        )
+        write_ollama_env_if_requested(
+            path=args.write_ollama_env,
+            storage=storage,
+            runtime=kind,
+            as_json=args.json,
+        )
         resolved, strategy = plan_deployment_from_model(
             args.model,
             hw,
@@ -254,7 +288,10 @@ def plan_main(argv: list[str] | None = None) -> int:
             kv_cache_storage=storage,
         )
         ollama_warnings = collect_ollama_kv_warnings(
-            storage, kind, check=args.check_ollama_kv, strict=args.strict_ollama_kv
+            storage,
+            kind,
+            check=effective_check_ollama_kv(args, kind),
+            strict=args.strict_ollama_kv,
         )
         sweep_rows = None
         if sweep_contexts is not None:
@@ -281,6 +318,19 @@ def plan_main(argv: list[str] | None = None) -> int:
 
     manual_rt: RuntimeKind = args.runtime if args.runtime != "auto" else "ollama"  # type: ignore[assignment]
     manual_storage = _kv_storage_for_cli(args.kv_storage, manual_rt)
+    sync_ollama_kv_if_explicit(
+        kv_flag=args.kv_storage,
+        storage=manual_storage,
+        runtime=manual_rt,
+        restart_ollama=args.restart_ollama,
+        as_json=args.json,
+    )
+    write_ollama_env_if_requested(
+        path=args.write_ollama_env,
+        storage=manual_storage,
+        runtime=manual_rt,
+        as_json=args.json,
+    )
     model = ModelSpec(
         name=args.name,
         parameter_count_b=args.params_b,
@@ -291,7 +341,10 @@ def plan_main(argv: list[str] | None = None) -> int:
         print(f"Model weights (~{model.quantization.value}): {model.estimated_weight_gib():.2f} GiB")
     strategy = DeploymentStrategyEvaluator(eval_config).evaluate(hw, model)
     ollama_warnings = collect_ollama_kv_warnings(
-        manual_storage, manual_rt, check=args.check_ollama_kv, strict=args.strict_ollama_kv
+        manual_storage,
+        manual_rt,
+        check=effective_check_ollama_kv(args, manual_rt),
+        strict=args.strict_ollama_kv,
     )
     sweep_rows = None
     if sweep_contexts is not None:
@@ -344,12 +397,23 @@ def run_main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check-ollama-kv",
         action="store_true",
-        help="Warn if local ollama process OLLAMA_KV_CACHE_TYPE may not match the plan",
+        help="Verificar OLLAMA_KV_CACHE_TYPE del daemon (auto con --kv-storage)",
+    )
+    parser.add_argument(
+        "--no-check-ollama-kv",
+        action="store_true",
+        help="No verificar KV del servidor aunque uses --kv-storage",
     )
     parser.add_argument(
         "--strict-ollama-kv",
         action="store_true",
         help="Fail run when Ollama server KV dtype cannot be verified or does not match",
+    )
+    parser.add_argument(
+        "--write-ollama-env",
+        default=None,
+        metavar="FILE",
+        help="Escribe script export (source) con OLLAMA_KV_CACHE_TYPE del plan",
     )
     parser.add_argument(
         "--json",
@@ -366,6 +430,11 @@ def run_main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Falla si /api/ps no coincide con el plan",
     )
+    parser.add_argument(
+        "--restart-ollama",
+        action="store_true",
+        help="Con --kv-storage: reinicia ollama serve con OLLAMA_KV_CACHE_TYPE (destructivo)",
+    )
     add_evaluator_policy_args(parser)
     args = parser.parse_args(argv)
     eval_config = build_evaluator_config(args)
@@ -373,9 +442,16 @@ def run_main(argv: list[str] | None = None) -> int:
     kind = infer_runtime_kind(args.model, args.runtime)  # type: ignore[arg-type]
     kv_explicit = parse_kv_cache_storage(args.kv_storage) if args.kv_storage else None
     storage = resolve_kv_cache_storage(explicit=kv_explicit, runtime=kind)
-    if kind == "ollama" and not args.json:
+    write_ollama_env_if_requested(
+        path=args.write_ollama_env,
+        storage=storage,
+        runtime=kind,
+        as_json=args.json,
+    )
+    if kind == "ollama" and not args.json and not args.kv_storage:
         _emit_ollama_kv_notes(storage, kind)
 
+    check_kv = effective_check_ollama_kv(args, kind)
     resolved, strategy, result = run_inference(
         args.model,
         args.prompt,
@@ -384,7 +460,8 @@ def run_main(argv: list[str] | None = None) -> int:
         pull_if_missing=not args.no_pull,
         context_length=args.context,
         kv_cache_storage=kv_explicit,
-        check_ollama_kv=args.check_ollama_kv,
+        restart_ollama=args.restart_ollama and bool(args.kv_storage),
+        check_ollama_kv=check_kv,
         strict_ollama_kv=args.strict_ollama_kv,
         check_ollama_ps=args.check_ollama_ps,
         strict_ollama_ps=args.strict_ollama_ps,
@@ -398,7 +475,7 @@ def run_main(argv: list[str] | None = None) -> int:
         )
         hw = discover_hardware_profile()
         kv_warnings = collect_ollama_kv_warnings(
-            storage, kind, check=args.check_ollama_kv, strict=False
+            storage, kind, check=check_kv, strict=False
         )
         num_ctx = args.context if args.context is not None else (resolved.context_length or 4096)
         ps_warnings = (

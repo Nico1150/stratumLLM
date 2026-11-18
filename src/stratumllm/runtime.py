@@ -121,7 +121,8 @@ def run_inference(
     strict: bool = False,
     context_length: int | None = None,
     kv_cache_storage: KvCacheStorage | None = None,
-    check_ollama_kv: bool = False,
+    restart_ollama: bool = False,
+    check_ollama_kv: bool | None = None,
     strict_ollama_kv: bool = False,
     check_ollama_ps: bool = False,
     strict_ollama_ps: bool = False,
@@ -168,8 +169,22 @@ def run_inference(
         )
         return resolved, strategy, result
 
+    if kv_cache_storage is not None:
+        from stratumllm.run.ollama_env import sync_ollama_kv_from_plan
+
+        sync_ollama_kv_from_plan(
+            storage,
+            restart_if_running=restart_ollama,
+            base_url=ollama_base_url,
+        )
+
     ensure_ollama_available(ollama_base_url)
-    if check_ollama_kv or strict_ollama_kv:
+    do_check_kv = (
+        check_ollama_kv
+        if check_ollama_kv is not None
+        else kv_cache_storage is not None
+    )
+    if do_check_kv or strict_ollama_kv:
         for line in check_ollama_kv_alignment(storage, strict=strict_ollama_kv):
             warnings.warn(line, UserWarning, stacklevel=2)
     result = ollama_generate(

@@ -117,14 +117,47 @@ def ollama_serve_command(storage: KvCacheStorage) -> str:
     return f"{prefix} ollama serve"
 
 
+def format_ollama_kv_restart_guidance(planned: KvCacheStorage) -> list[str]:
+    """Comandos para alinear el KV global de Ollama con el plan (terminal y app macOS)."""
+    hints = ollama_serve_env_hints(planned)
+    lines = [
+        "  # Terminal: export y reiniciar el daemon",
+    ]
+    for key, value in hints.items():
+        lines.append(f"  export {key}={value}")
+    lines.append(f"  # o: {ollama_serve_command(planned)}")
+    lines.append("  # App de escritorio en macOS: quit Ollama, luego:")
+    for key, value in hints.items():
+        lines.append(f"  launchctl setenv {key} {value}")
+    lines.append("  # y volvé a abrir Ollama (StratumLLM no reinicia el servidor por vos).")
+    return lines
+
+
+def format_ollama_kv_mismatch_lines(
+    planned: KvCacheStorage,
+    server: KvCacheStorage,
+) -> list[str]:
+    """Aviso cuando --kv-storage / plan no coincide con OLLAMA_KV_CACHE_TYPE del servidor."""
+    lines = [
+        (
+            f"warning: El plan usa kv_cache_storage={planned.value} pero el servidor "
+            f"Ollama detectado usa {server.value}."
+        ),
+        (
+            "Ollama no permite cambiar el caché KV por petición HTTP; reiniciá el daemon "
+            "con estas variables para alinear la VRAM real con el plan:"
+        ),
+    ]
+    lines.extend(format_ollama_kv_restart_guidance(planned))
+    return lines
+
+
 def format_ollama_kv_serve_lines(storage: KvCacheStorage) -> list[str]:
     """Human-readable instructions for CLI (Ollama does not accept KV dtype per request)."""
     lines = [
         "Ollama KV cache is global on the server (not set by StratumLLM /api/generate).",
         f"Planning assumes kv_cache_storage={storage.value}.",
-        "Restart the daemon with:",
+        "Si necesitás alinear el servidor, reiniciá con:",
     ]
-    for key, value in ollama_serve_env_hints(storage).items():
-        lines.append(f"  export {key}={value}")
-    lines.append(f"  # then: ollama serve   (or: {ollama_serve_command(storage)})")
+    lines.extend(format_ollama_kv_restart_guidance(storage))
     return lines
