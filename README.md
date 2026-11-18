@@ -65,6 +65,27 @@ stratumllm-plan qwen2.5:7b --context-sweep 4096:131072:8192 --kv-storage q8_0
 
 También: `examples/context_sweep.py`.
 
+## Flujo recomendado (Ollama + KV)
+
+Cuando querés que el **plan de VRAM** coincida con **Ollama** usando KV quant:
+
+```bash
+# 1) Plan + script de variables (auto-check KV si pasás --kv-storage)
+stratumllm-plan qwen2.5:7b --context 8192 --kv-storage q8_0 \
+  --write-ollama-env ./ollama-kv.env
+
+# 2) Reiniciar Ollama con esas variables (elegí una vía)
+source ./ollama-kv.env && ollama serve
+# macOS app: quit Ollama, luego los launchctl del archivo, y reabrí
+# Windows: setx del sync automático o $env:... en PowerShell, luego reiniciá Ollama
+
+# 3) Run con verificación estricta (opcional)
+stratumllm-run qwen2.5:7b "hola" --kv-storage q8_0 --strict-ollama-kv
+# o en un solo paso destructivo: ... --kv-storage q8_0 --restart-ollama
+```
+
+**llama.cpp:** `--kv-storage` en el mismo `stratumllm-run` alcanza (no hace falta reiniciar Ollama).
+
 ## Plan vs ejecución (KV cache)
 
 | Runtime | El plan usa `--kv-storage` | La inferencia real |
@@ -113,4 +134,4 @@ print(result.text)
 
 Integradores: `KvCacheStorage`, `resolve_kv_cache_storage`, `build_plan_document`, `build_run_document`, `check_ollama_kv_alignment`, y `parse_context_sweep` se exportan desde `import stratumllm`.
 
-CI corre tests en **Ubuntu** y **macOS** (Python 3.11–3.12).
+CI corre tests en **Ubuntu**, **macOS** y **Windows** (Python 3.11–3.12). Versión actual: **0.2.0** (ver [CHANGELOG.md](CHANGELOG.md)).

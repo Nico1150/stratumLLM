@@ -24,6 +24,7 @@ class OllamaKvEnvSyncResult:
 
     applied_to_process: bool
     launchctl_ok: bool
+    windows_setx_ok: bool
     restart_attempted: bool
     notes: list[str]
 
@@ -51,6 +52,33 @@ def apply_ollama_kv_launchctl(storage: KvCacheStorage) -> list[str]:
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
             notes.append(f"launchctl setenv {key}={value} falló: {exc}")
+    return notes
+
+
+def apply_ollama_kv_windows(storage: KvCacheStorage) -> list[str]:
+    """
+    Windows: ``setx`` for new processes (Ollama must restart to pick up values).
+
+    StratumLLM does not restart the Windows tray service automatically unless
+    ``--restart-ollama`` is used (terminal ``ollama serve`` only).
+    """
+    if platform.system() != "Windows":
+        return []
+    notes: list[str] = []
+    for key, value in ollama_serve_env_hints(storage).items():
+        try:
+            subprocess.run(
+                ["setx", key, value],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+            notes.append(f"setx {key}={value} falló: {exc}")
+    if not notes:
+        notes.append(
+            "Variables de usuario actualizadas con setx; reiniciá Ollama (bandeja o `ollama serve`)."
+        )
     return notes
 
 
@@ -140,7 +168,10 @@ def write_ollama_env_file(path: str | Path, storage: KvCacheStorage) -> Path:
     )
     for key, value in hints.items():
         lines.append(f"# launchctl setenv {key} {value}")
-    lines.append("# Windows (persistent user env): setx " + " ; setx ".join(
+    lines.append("# Windows (PowerShell, sesión actual):")
+    for key, value in hints.items():
+        lines.append(f"#   $env:{key}='{value}'")
+    lines.append("# Windows (persistente, nueva terminal): setx " + " & setx ".join(
         f"{k} {v}" for k, v in hints.items()
     ))
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -159,11 +190,13 @@ def sync_ollama_kv_from_plan(
 
     - Always: ``os.environ`` in this process.
     - macOS: ``launchctl setenv`` for the desktop app on next launch.
+    - Windows: ``setx`` (user env); restart Ollama to apply.
     - Optional: ``restart_ollama_serve`` when ``restart_if_running``.
     """
     apply_ollama_kv_to_process(storage)
     launch_notes = apply_ollama_kv_launchctl(storage)
-    notes = list(launch_notes)
+    windows_notes = apply_ollama_kv_windows(storage)
+    notes = list(launch_notes) + list(windows_notes)
     restarted = False
     if restart_if_running:
         restart_ollama_serve(storage, base_url=base_url)
@@ -176,14 +209,21 @@ def sync_ollama_kv_from_plan(
             "Si Ollama ya estaba abierto (app o serve), cerralo y volvé a abrirlo "
             "para que tome las variables."
         )
+    elif platform.system() == "Windows":
+        notes.append(
+            "Si Ollama corre en la bandeja, salí y volvé a entrar tras `setx`, "
+            "o usá `--restart-ollama` con `ollama serve` en terminal."
+        )
     elif not restart_if_running:
         notes.append(
             "Si ``ollama serve`` ya corría, reinicialo con el mismo OLLAMA_KV_CACHE_TYPE "
             "para alinear VRAM con el plan."
         )
+    windows_failed = any("setx" in n and "falló" in n for n in windows_notes)
     return OllamaKvEnvSyncResult(
         applied_to_process=True,
         launchctl_ok=not launch_notes,
+        windows_setx_ok=platform.system() != "Windows" or not windows_failed,
         restart_attempted=restarted,
         notes=notes,
     )
