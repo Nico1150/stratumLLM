@@ -95,3 +95,36 @@ def llama_cpp_cache_cli_args(storage: KvCacheStorage) -> list[str]:
 def kv_storage_for_runtime(runtime: str) -> KvCacheStorage:
     """Backward-compatible default; prefer ``resolve_kv_cache_storage``."""
     return resolve_kv_cache_storage(runtime=runtime)
+
+
+def ollama_serve_env_hints(storage: KvCacheStorage) -> dict[str, str]:
+    """
+    Env vars for ``ollama serve`` so runtime KV matches planning.
+
+    Quantized KV requires Flash Attention in Ollama (see Ollama FAQ).
+    """
+    hints: dict[str, str] = {
+        "OLLAMA_KV_CACHE_TYPE": storage.llama_cpp_cache_type(),
+    }
+    if storage is not KvCacheStorage.F16:
+        hints["OLLAMA_FLASH_ATTENTION"] = "1"
+    return hints
+
+
+def ollama_serve_command(storage: KvCacheStorage) -> str:
+    """Single-line example to start Ollama with the planned KV cache dtype."""
+    prefix = " ".join(f"{k}={v}" for k, v in ollama_serve_env_hints(storage).items())
+    return f"{prefix} ollama serve"
+
+
+def format_ollama_kv_serve_lines(storage: KvCacheStorage) -> list[str]:
+    """Human-readable instructions for CLI (Ollama does not accept KV dtype per request)."""
+    lines = [
+        "Ollama KV cache is global on the server (not set by StratumLLM /api/generate).",
+        f"Planning assumes kv_cache_storage={storage.value}.",
+        "Restart the daemon with:",
+    ]
+    for key, value in ollama_serve_env_hints(storage).items():
+        lines.append(f"  export {key}={value}")
+    lines.append(f"  # then: ollama serve   (or: {ollama_serve_command(storage)})")
+    return lines

@@ -12,7 +12,12 @@ from stratumllm import (
     plan_deployment_from_model,
     run_inference,
 )
-from stratumllm.kv_cache import KvCacheStorage, parse_kv_cache_storage, resolve_kv_cache_storage
+from stratumllm.kv_cache import (
+    KvCacheStorage,
+    format_ollama_kv_serve_lines,
+    parse_kv_cache_storage,
+    resolve_kv_cache_storage,
+)
 from stratumllm.resolve import ResolvedModel
 from stratumllm.runtime import RuntimeKind, infer_runtime_kind
 from stratumllm.strategies import (
@@ -72,6 +77,13 @@ def _print_resolved(resolved: ResolvedModel) -> None:
         print(f"  attention: {', '.join(attn)}")
     if resolved.artifact_path is not None:
         print(f"  artifact: {resolved.artifact_path}")
+
+
+def _emit_ollama_kv_notes(storage: KvCacheStorage, runtime: RuntimeKind) -> None:
+    if runtime != "ollama":
+        return
+    for line in format_ollama_kv_serve_lines(storage):
+        print(line)
 
 
 def _print_planning_spec(spec: ModelSpec) -> None:
@@ -159,6 +171,7 @@ def plan_main(argv: list[str] | None = None) -> int:
         _print_resolved(resolved)
         _print_planning_spec(spec)
         _print_strategy(strategy)
+        _emit_ollama_kv_notes(storage, kind)
         return 0
 
     manual_rt: RuntimeKind = args.runtime if args.runtime != "auto" else "ollama"  # type: ignore[assignment]
@@ -173,6 +186,7 @@ def plan_main(argv: list[str] | None = None) -> int:
     _print_planning_spec(model)
     strategy = DeploymentStrategyEvaluator().evaluate(hw, model)
     _print_strategy(strategy)
+    _emit_ollama_kv_notes(manual_storage, manual_rt)
     return 0
 
 
@@ -200,9 +214,24 @@ def run_main(argv: list[str] | None = None) -> int:
         metavar="DTYPE",
         help="K/V cache dtype: f16, q8_0, q4_0 (llama.cpp flags; Ollama uses server env)",
     )
+    parser.add_argument(
+        "--check-ollama-kv",
+        action="store_true",
+        help="Warn if local ollama process OLLAMA_KV_CACHE_TYPE may not match the plan",
+    )
+    parser.add_argument(
+        "--strict-ollama-kv",
+        action="store_true",
+        help="Fail run when Ollama server KV dtype cannot be verified or does not match",
+    )
     args = parser.parse_args(argv)
 
+    kind = infer_runtime_kind(args.model, args.runtime)  # type: ignore[arg-type]
     kv_explicit = parse_kv_cache_storage(args.kv_storage) if args.kv_storage else None
+    storage = resolve_kv_cache_storage(explicit=kv_explicit, runtime=kind)
+    if kind == "ollama":
+        _emit_ollama_kv_notes(storage, kind)
+
     resolved, strategy, result = run_inference(
         args.model,
         args.prompt,
@@ -210,6 +239,8 @@ def run_main(argv: list[str] | None = None) -> int:
         pull_if_missing=not args.no_pull,
         context_length=args.context,
         kv_cache_storage=kv_explicit,
+        check_ollama_kv=args.check_ollama_kv,
+        strict_ollama_kv=args.strict_ollama_kv,
     )
     print(f"--- {result.runtime} ({strategy.kind.value}) ---")
     print(f"Model: {resolved.name} | weights: {resolved.weight_size_gib:.2f} GiB")

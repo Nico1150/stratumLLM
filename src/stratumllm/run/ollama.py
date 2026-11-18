@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import json
+import platform
+import re
+import subprocess
 import urllib.error
 import urllib.request
-from typing import Any
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
 
-from stratumllm.exceptions import InferenceError, ModelResolutionError
+from stratumllm.exceptions import ConfigurationError, InferenceError, ModelResolutionError
+from stratumllm.kv_cache import (
+    KvCacheStorage,
+    ollama_serve_command,
+    parse_kv_cache_storage,
+)
 from stratumllm.resolve.ollama import ensure_model_pulled as _ensure_model_pulled
 from stratumllm.run import InferenceResult, strategy_to_ollama_options
 from stratumllm.strategies import DeploymentStrategy
@@ -30,6 +40,129 @@ def ensure_ollama_available(base_url: str | None = None) -> None:
         raise InferenceError(
             f"Ollama is not reachable at {base}. Start the daemon (`ollama serve`) or set OLLAMA_HOST."
         ) from exc
+
+
+@dataclass(frozen=True, slots=True)
+class OllamaKvProbeResult:
+    """Best-effort read of ``OLLAMA_KV_CACHE_TYPE`` from a local ``ollama`` process."""
+
+    status: Literal["probed", "no_process", "unreadable"]
+    server_storage: KvCacheStorage | None = None
+
+
+def _find_ollama_pids() -> list[int]:
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "ollama"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            pids.append(int(line))
+    return pids
+
+
+def _kv_from_linux_environ(pid: int) -> KvCacheStorage | Literal["unreadable"]:
+    path = Path(f"/proc/{pid}/environ")
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return "unreadable"
+    for entry in raw.split(b"\0"):
+        if entry.startswith(b"OLLAMA_KV_CACHE_TYPE="):
+            value = entry.split(b"=", 1)[1].decode(errors="replace")
+            return parse_kv_cache_storage(value)
+    return KvCacheStorage.F16
+
+
+def _kv_from_darwin_ps(pid: int) -> KvCacheStorage | Literal["unreadable"]:
+    try:
+        result = subprocess.run(
+            ["ps", "eww", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return "unreadable"
+    if result.returncode != 0 or str(pid) not in result.stdout:
+        return "unreadable"
+    match = re.search(r"OLLAMA_KV_CACHE_TYPE=(\S+)", result.stdout)
+    if match:
+        return parse_kv_cache_storage(match.group(1))
+    return KvCacheStorage.F16
+
+
+def probe_ollama_server_kv_cache_type() -> OllamaKvProbeResult:
+    """
+    Inspect the local ``ollama`` process environment (not exposed over HTTP).
+
+    When the variable is unset on the server, Ollama defaults to ``f16``.
+    """
+    pids = _find_ollama_pids()
+    if not pids:
+        return OllamaKvProbeResult(status="no_process")
+    system = platform.system()
+    for pid in pids:
+        if system == "Linux":
+            outcome = _kv_from_linux_environ(pid)
+        elif system == "Darwin":
+            outcome = _kv_from_darwin_ps(pid)
+        else:
+            return OllamaKvProbeResult(status="unreadable")
+        if outcome == "unreadable":
+            continue
+        return OllamaKvProbeResult(status="probed", server_storage=outcome)
+    return OllamaKvProbeResult(status="unreadable")
+
+
+def check_ollama_kv_alignment(
+    planned: KvCacheStorage,
+    *,
+    strict: bool = False,
+) -> list[str]:
+    """Return warning lines when the running server KV dtype may not match the plan.
+
+    With ``strict=True``, raise ``ConfigurationError`` on mismatch or if unprobed.
+    """
+    probe = probe_ollama_server_kv_cache_type()
+    if probe.status == "no_process":
+        msg = (
+            "Could not find a local `ollama` process to read OLLAMA_KV_CACHE_TYPE "
+            "(the HTTP API does not report it). Ensure the server was started with "
+            f"`{ollama_serve_command(planned)}` if you rely on this plan's KV size."
+        )
+        if strict:
+            raise ConfigurationError(msg)
+        return [f"warning: {msg}"]
+    if probe.status == "unreadable" or probe.server_storage is None:
+        msg = (
+            "Could not read OLLAMA_KV_CACHE_TYPE from the ollama process "
+            "(permissions or unsupported host). Verify the server matches the plan "
+            f"({planned.value}) manually."
+        )
+        if strict:
+            raise ConfigurationError(msg)
+        return [f"warning: {msg}"]
+    if probe.server_storage != planned:
+        msg = (
+            f"Ollama server KV cache is {probe.server_storage.value} but the plan uses "
+            f"{planned.value}. Restart with `{ollama_serve_command(planned)}`."
+        )
+        if strict:
+            raise ConfigurationError(msg)
+        return [f"warning: {msg}"]
+    return []
 
 
 def ensure_model_pulled(model_ref: str, *, pull_if_missing: bool = True) -> None:

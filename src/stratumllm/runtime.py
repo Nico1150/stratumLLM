@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Literal
 
@@ -13,7 +14,11 @@ from stratumllm.model_spec import ModelSpec
 from stratumllm.resolve import ResolvedModel, resolve_gguf, resolve_model
 from stratumllm.run import InferenceResult
 from stratumllm.run.llama_cpp import llama_cpp_generate
-from stratumllm.run.ollama import ensure_ollama_available, ollama_generate
+from stratumllm.run.ollama import (
+    check_ollama_kv_alignment,
+    ensure_ollama_available,
+    ollama_generate,
+)
 from stratumllm.strategies import DeploymentStrategy
 
 RuntimeKind = Literal["ollama", "llama.cpp", "auto"]
@@ -115,6 +120,8 @@ def run_inference(
     strict: bool = False,
     context_length: int | None = None,
     kv_cache_storage: KvCacheStorage | None = None,
+    check_ollama_kv: bool = False,
+    strict_ollama_kv: bool = False,
     max_tokens: int = 256,
     ollama_base_url: str | None = None,
 ) -> tuple[ResolvedModel, DeploymentStrategy, InferenceResult]:
@@ -159,6 +166,9 @@ def run_inference(
         return resolved, strategy, result
 
     ensure_ollama_available(ollama_base_url)
+    if check_ollama_kv or strict_ollama_kv:
+        for line in check_ollama_kv_alignment(storage, strict=strict_ollama_kv):
+            warnings.warn(line, UserWarning, stacklevel=2)
     result = ollama_generate(
         model_ref,
         prompt,
