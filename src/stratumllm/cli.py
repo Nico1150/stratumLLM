@@ -20,8 +20,10 @@ from stratumllm.kv_cache import (
 )
 from stratumllm.plan_output import (
     build_plan_document,
+    build_run_document,
     collect_ollama_kv_warnings,
     emit_plan_json,
+    emit_run_json,
     parse_context_sweep,
     print_context_sweep_table,
     run_context_sweep,
@@ -343,12 +345,17 @@ def run_main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Fail run when Ollama server KV dtype cannot be verified or does not match",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON with plan, resolved model, strategy, and inference text",
+    )
     args = parser.parse_args(argv)
 
     kind = infer_runtime_kind(args.model, args.runtime)  # type: ignore[arg-type]
     kv_explicit = parse_kv_cache_storage(args.kv_storage) if args.kv_storage else None
     storage = resolve_kv_cache_storage(explicit=kv_explicit, runtime=kind)
-    if kind == "ollama":
+    if kind == "ollama" and not args.json:
         _emit_ollama_kv_notes(storage, kind)
 
     resolved, strategy, result = run_inference(
@@ -361,6 +368,32 @@ def run_main(argv: list[str] | None = None) -> int:
         check_ollama_kv=args.check_ollama_kv,
         strict_ollama_kv=args.strict_ollama_kv,
     )
+    if args.json:
+        spec = resolved.to_model_spec(
+            context_length=args.context,
+            kv_cache_storage=storage,
+        )
+        hw = discover_hardware_profile()
+        kv_warnings = collect_ollama_kv_warnings(
+            storage, kind, check=args.check_ollama_kv, strict=False
+        )
+        emit_run_json(
+            build_run_document(
+                hardware=hw,
+                runtime=kind,
+                planning_spec=spec,
+                resolved=resolved,
+                strategy=strategy,
+                kv_storage=storage,
+                prompt=args.prompt,
+                response_text=result.text,
+                inference_runtime=result.runtime,
+                raw_response=result.raw,
+                ollama_kv_warnings=kv_warnings or None,
+            )
+        )
+        return 0
+
     print(f"--- {result.runtime} ({strategy.kind.value}) ---")
     print(f"Model: {resolved.name} | weights: {resolved.weight_size_gib:.2f} GiB")
     print(f"KV (plan): {strategy.rationale.kv_cache_gib:.2f} GiB")

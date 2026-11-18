@@ -37,6 +37,7 @@ stratumllm-plan qwen2.5:7b --context-sweep 4096,8192,16384,32768
 stratumllm-plan qwen2.5:7b --check-ollama-kv
 
 stratumllm-run qwen2.5:7b "Why is the sky blue?"
+stratumllm-run qwen2.5:7b "hola" --json
 stratumllm-run model.gguf "hola" --runtime llama.cpp --kv-storage q4_0 --context 8192
 ```
 
@@ -45,7 +46,7 @@ stratumllm-run model.gguf "hola" --runtime llama.cpp --kv-storage q4_0 --context
 | `--context` | Longitud para sizing de KV y (en run) `num_ctx` |
 | `--kv-storage` | Dtype del KV en el **plan** (`f16`, `q8_0`, `q4_0`) |
 | `--context-sweep` | Tabla estrategia vs varios contextos (`4096,8192` o `4096:32768:4096`) |
-| `--json` | Un documento JSON con hardware, spec, estrategia y sweep |
+| `--json` | JSON con hardware, spec, estrategia y sweep (`stratumllm-run --json` incluye la respuesta) |
 | `--check-ollama-kv` | Avisa si el proceso local `ollama` no coincide con el plan |
 | `--strict-ollama-kv` | Falla si no se puede verificar o hay mismatch |
 
@@ -102,3 +103,7 @@ resolved, strategy, result = run_inference(
 )
 print(result.text)
 ```
+
+Integradores: `KvCacheStorage`, `resolve_kv_cache_storage`, `build_plan_document`, `build_run_document`, `check_ollama_kv_alignment`, y `parse_context_sweep` se exportan desde `import stratumllm`.
+
+CI corre tests en **Ubuntu** y **macOS** (Python 3.11–3.12).

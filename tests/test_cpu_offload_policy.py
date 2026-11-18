@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from stratumllm import DeploymentStrategyEvaluator, EvaluatorConfig, HardwareProfile, GpuDevice, ModelSpec
+from stratumllm import (
+    DeploymentStrategyEvaluator,
+    EvaluatorConfig,
+    GpuDevice,
+    HardwareProfile,
+    ModelSpec,
+)
 from stratumllm.exceptions import InsufficientResourcesError
 from stratumllm.strategies import StratifiedOffloadStrategy
 

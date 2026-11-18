@@ -6,11 +6,11 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import build_minimal_gguf
 
 from stratumllm.exceptions import ModelResolutionError
-from stratumllm.resolve.ollama import parse_ollama_model_ref, resolve_ollama_blob_path
 from stratumllm.resolve import resolve_ollama
-from conftest import build_minimal_gguf
+from stratumllm.resolve.ollama import parse_ollama_model_ref, resolve_ollama_blob_path
 
 
 def test_parse_model_ref() -> None:

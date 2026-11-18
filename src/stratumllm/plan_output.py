@@ -136,3 +136,43 @@ def collect_ollama_kv_warnings(
     if runtime != "ollama" or not (check or strict):
         return []
     return check_ollama_kv_alignment(storage, strict=strict)
+
+
+def build_run_document(
+    *,
+    hardware: HardwareProfile,
+    runtime: RuntimeKind,
+    planning_spec: ModelSpec,
+    resolved: ResolvedModel,
+    strategy: DeploymentStrategy,
+    kv_storage: KvCacheStorage,
+    prompt: str,
+    response_text: str,
+    inference_runtime: str,
+    raw_response: dict[str, Any] | None = None,
+    ollama_kv_warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    doc: dict[str, Any] = {
+        "hardware": _model_json(hardware),
+        "runtime": runtime,
+        "planning_spec": _model_json(planning_spec),
+        "resolved": _model_json(resolved),
+        "strategy": _model_json(strategy),
+        "kv_cache_storage": kv_storage.value,
+        "prompt": prompt,
+        "inference": {
+            "text": response_text,
+            "runtime": inference_runtime,
+        },
+    }
+    if raw_response is not None:
+        doc["inference"]["raw"] = raw_response
+    if runtime == "ollama":
+        doc["ollama_serve_env"] = ollama_serve_env_hints(kv_storage)
+    if ollama_kv_warnings:
+        doc["ollama_kv_warnings"] = ollama_kv_warnings
+    return doc
+
+
+def emit_run_json(document: dict[str, Any]) -> None:
+    print(json.dumps(document, indent=2, ensure_ascii=False))

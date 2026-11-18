@@ -6,9 +6,8 @@ import struct
 from io import BytesIO
 from pathlib import Path
 
-import pytest
-
 from conftest import _write_kv
+
 from stratumllm import resolve_gguf
 from stratumllm.resolve.attention import attention_footprint_from_gguf
 

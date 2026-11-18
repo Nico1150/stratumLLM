@@ -7,11 +7,11 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+from conftest import _write_kv, build_minimal_gguf
 
 from stratumllm import resolve_gguf
 from stratumllm.exceptions import ModelResolutionError
 from stratumllm.model_spec import QuantizationKind
-from conftest import _write_kv, build_minimal_gguf
 
 
 def test_resolve_gguf_uses_file_size_and_metadata(tmp_path: Path) -> None:

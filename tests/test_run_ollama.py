@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-from stratumllm.strategies import FullGPUStrategy, StrategyRationale
 from stratumllm.run.ollama import ollama_generate
+from stratumllm.strategies import FullGPUStrategy, StrategyRationale
 
 
 def _full_gpu_strategy() -> FullGPUStrategy:
